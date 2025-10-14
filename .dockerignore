@@ -1,0 +1,13 @@
+# .dockerignore
+Dockerfile
+.dockerignore
+.git
+.idea
+__pycache__
+*.pyc
+# These are mounted as volumes, so they don't need to be in the image
+input_files
+organised_files
+reports
+# Secrets should be passed as environment variables, not copied
+.env
