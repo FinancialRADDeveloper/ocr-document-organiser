@@ -17,10 +17,20 @@ from pdf2image import convert_from_path
 load_dotenv()
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
+# --- Tesseract Configuration for Windows ---
+# If running on Windows, specify the path to the Tesseract executable.
+# This is necessary because the installer doesn't always add it to the system's PATH.
+# On other systems (like Linux in Docker), Tesseract is expected to be in the PATH.
+if os.name == 'nt':  # 'nt' is the name for Windows
+    # Update this path if you installed Tesseract in a different location
+    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
 # Define folder paths
 INPUT_FOLDER = Path("input_files")
 OUTPUT_FOLDER = Path("organised_files")
 REPORTS_FOLDER = Path("reports")
+PROCESSED_FOLDER = Path("processing_completed")
+FAILED_FOLDER = Path("processing_failed")
 
 # --- AI Model Interaction ---
 def list_gemini_models():
@@ -126,6 +136,26 @@ def generate_filename_from_text(document_text):
         return None
 
 
+def archive_original_file(original_path, success):
+    """Moves the original input file to a success or failure folder."""
+    try:
+        if success:
+            destination_folder = PROCESSED_FOLDER
+            status = "completed"
+        else:
+            destination_folder = FAILED_FOLDER
+            status = "failed"
+
+        # Ensure destination folder exists
+        destination_folder.mkdir(exist_ok=True)
+
+        # Move the file
+        shutil.move(original_path, destination_folder / original_path.name)
+        print(f"  -> Moved original file to {status} folder.")
+    except Exception as e:
+        print(f"  -> Error moving original file: {e}")
+
+
 # --- File Processing ---
 def save_results_to_csv(results):
     """Saves processing results to a timestamped CSV file."""
@@ -172,7 +202,7 @@ def process_files():
     print("Starting file processing...")
 
     # list the models once for debugging
-    list_gemini_models()
+    # list_gemini_models()
 
     # Iterate through files in the input folder
     for original_path in INPUT_FOLDER.glob("*.pdf"):
@@ -181,11 +211,16 @@ def process_files():
         # Step 1: Extract text from the PDF
         document_text = extract_text_from_pdf_local(original_path)
 
+        if not document_text:
+            print(f"  Error in processing: {original_path.name}")
+            continue
+
         # Step 2: Generate a new filename from the extracted text
         suggested_name = generate_filename_from_text(document_text)
 
         if not suggested_name:
             print(f"  -> Could not generate a name for {original_path.name}. Skipping.")
+            archive_original_file(original_path, success=False)  # Move to failed folder
             continue
 
         # Copy and rename the file
@@ -201,6 +236,9 @@ def process_files():
             'new_name': new_path.name,
             'new_path': str(new_path.resolve())
         })
+
+        # Archive the original file
+        archive_original_file(original_path, success=True)
 
     print("File processing complete.")
 
@@ -228,4 +266,3 @@ if __name__ == '__main__':
     print("\n--- Starting Web Server ---")
     print("Open your browser and go to http://127.0.0.1:5000")
     app.run(debug=True, host='0.0.0.0')
-
