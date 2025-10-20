@@ -11,7 +11,6 @@
             background-color: #f4f7f9;
             color: #333;
             padding: 2em;
-        }
         .container {
             max-width: 1000px;
             margin: auto;
@@ -80,6 +79,29 @@
             padding: 10px;
             border-radius: 4px;
         }
+        .organize-container {
+            margin-top: 3em;
+            padding: 1.5em;
+            background-color: #f8f9fa;
+            border: 1px solid #d1d9e0;
+            border-radius: 8px;
+        }
+        .organize-container textarea {
+            background-color: #eef1f4;
+            border: 1px solid #ccc;
+        }
+        .organize-container button {
+            margin-right: 10px;
+        }
+        #organize-status pre {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            background-color: #fff;
+            padding: 10px;
+            border-radius: 4px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
     </style>
 </head>
 <body>
@@ -100,6 +122,32 @@
         <h1>File Organization Results</h1>
         <div id="results-container">
             <p>Upload files and click "Upload and Process" to see the results.</p>
+        </div>
+
+        <div class="organize-container">
+            <h2>Organize Processed Files</h2>
+            <p>
+                Create your desired folder structure inside the <strong>final_documents</strong> directory in the project.
+                Then, click "Scan Structure", select a report, and run a "Trial Run" to see the plan before organizing.
+            </p>
+            <form id="organize-form">
+                <button type="button" id="scan-structure-btn">Scan Structure</button>
+                <br><br>
+                <label for="folder-structure">Destination Folder Structure (Read-only):</label>
+                <br>
+                <textarea id="folder-structure" name="folder_structure" rows="8" cols="50" style="width:100%;" readonly></textarea>
+                <br><br>
+                <label for="report-select">Processing Report:</label>
+                <select id="report-select" name="report">
+                    {% for report in reports %}
+                        <option value="{{ report }}">{{ report }}</option>
+                    {% endfor %}
+                </select>
+                <br><br>
+                <button type="submit" name="trial_run" value="true">Trial Run</button>
+                <button type="submit" name="trial_run" value="false">Organize Files</button>
+            </form>
+            <div id="organize-status" style="margin-top: 1em;"></div>
         </div>
     </div>
 
@@ -163,6 +211,53 @@
             } catch (error) {
                 console.error('Error:', error);
                 statusLog.innerHTML += `<li>Error: ${error.message}</li>`;
+            }
+        });
+
+        document.getElementById('scan-structure-btn').addEventListener('click', async function() {
+            const textarea = document.getElementById('folder-structure');
+            textarea.value = 'Scanning...';
+            try {
+                const response = await fetch('/scan_structure');
+                const structure = await response.text();
+                textarea.value = structure;
+            } catch (error) {
+                console.error('Scan Error:', error);
+                textarea.value = `Error scanning structure: ${error.message}`;
+            }
+        });
+
+        document.getElementById('organize-form').addEventListener('submit', async function(event) {
+            event.preventDefault();
+            const form = event.target;
+            const formData = new FormData(form);
+            const statusDiv = document.getElementById('organize-status');
+
+            // Find which button was clicked
+            const submitter = event.submitter;
+            const trialRun = submitter.name === 'trial_run' && submitter.value === 'true';
+            formData.append('trial_run', trialRun);
+
+            statusDiv.innerHTML = '<p>Processing request...</p>';
+
+            try {
+                const response = await fetch('/organize', {
+                    method: 'POST',
+                    body: new URLSearchParams(formData)
+                });
+                const text = await response.text();
+
+                // For trial run, format as preformatted text
+                if (trialRun && response.ok) {
+                    statusDiv.innerHTML = `<h3>Trial Run Plan</h3><pre>${text}</pre>`;
+                } else if (response.ok) {
+                    statusDiv.innerHTML = `<p><strong>Success:</strong> ${text}</p>`;
+                } else {
+                    statusDiv.innerHTML = `<p><strong>Error:</strong> ${text}</p>`;
+                }
+            } catch (error) {
+                console.error('Organize Error:', error);
+                statusDiv.innerHTML = `<p><strong>Error:</strong> ${error.message}</p>`;
             }
         });
 
