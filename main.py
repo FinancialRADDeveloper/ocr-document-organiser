@@ -36,6 +36,7 @@ OUTPUT_FOLDER = Path("organised_files")
 REPORTS_FOLDER = Path("reports")
 PROCESSED_FOLDER = Path("processing_completed")
 FAILED_FOLDER = Path("processing_failed")
+FINAL_DOCUMENTS_ROOT = Path("final_documents")
 
 
 # --- AI Model Interaction ---
@@ -161,34 +162,24 @@ def archive_original_file(original_path, success):
 
 
 # --- File Processing ---
-def save_results_to_csv(results_data):
-    """Saves processing results to a timestamped CSV file using pandas."""
-    if not results_data:
-        print("No results to save.")
-        return None
-
-    # Ensure reports folder exists
-    REPORTS_FOLDER.mkdir(exist_ok=True)
-
-    # Generate timestamp for filename
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    csv_filename = REPORTS_FOLDER / f"processing_report_{timestamp}.csv"
-
+def append_result_to_csv(result_data, csv_path):
+    """Appends a single processing result to a CSV file."""
     try:
-        # Create a DataFrame from the results
-        df = pd.DataFrame(results_data)
+        # Create a DataFrame for the single result
+        df = pd.DataFrame([result_data])
 
-        # Define the columns for the CSV
+        # Ensure the columns are in the correct order for consistency
         df = df[['original_name', 'ocr_text', 'new_name']]
 
-        # Save to CSV
-        df.to_csv(csv_filename, index=False, encoding='utf-8')
+        # If the file doesn't exist yet, write the header
+        header = not csv_path.exists()
 
-        print(f"\nResults saved to: {csv_filename}")
-        return str(csv_filename)
+        # Append to the CSV file
+        df.to_csv(csv_path, mode='a', header=header, index=False, encoding='utf-8')
+
     except Exception as e:
-        print(f"Error saving CSV file: {e}")
-        return None
+        # Use logging for better error tracking
+        logging.error(f"Error appending to CSV file: {e}")
 
 
 def process_files():
@@ -213,9 +204,14 @@ def process_files():
     OUTPUT_FOLDER.mkdir(exist_ok=True)
 
     results_for_web = []
-    results_for_csv = []
 
     yield log_and_stream("Starting file processing...")
+
+    # Generate a single timestamped CSV for this processing run
+    REPORTS_FOLDER.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_path = REPORTS_FOLDER / f"processing_report_{timestamp}.csv"
+    yield log_and_stream(f"Creating report at: {csv_path}")
 
     # list the models once for debugging
     # list_gemini_models()
@@ -250,26 +246,117 @@ def process_files():
             'original_name': original_path.name,
             'new_name': suggested_name,
         })
-        # Store results for the CSV report
-        results_for_csv.append({
+        # Create a dictionary with the full results for the CSV
+        result_for_csv = {
             'original_name': original_path.name,
             'ocr_text': document_text,
             'new_name': suggested_name,
-        })
+        }
+
+        # Append the result to the CSV file immediately after processing
+        append_result_to_csv(result_for_csv, csv_path)
 
         # Archive the original file
         yield from run_sub_process(archive_original_file(original_path, success=True))
 
     yield log_and_stream("File processing complete.")
 
-    # Save results to CSV file
-    if results_for_csv:
-        csv_path = save_results_to_csv(results_for_csv)
-        if csv_path:
-            yield log_and_stream(f"Results saved to CSV: {csv_path}")
+    # The CSV is now saved incrementally, but we can log the final path.
+    yield log_and_stream(f"Final report is available at: {csv_path}")
 
     # Use a specific event to send the final data
     yield f"event: end\\ndata: {json.dumps(results_for_web)}\\n\\n"
+
+
+# --- Secondary File Organization ---
+def get_folder_suggestions(report_df, folder_structure):
+    """
+    Gets folder suggestions from Gemini for a DataFrame of files.
+
+    Args:
+        report_df (pd.DataFrame): DataFrame with file info.
+        folder_structure (str): A string describing the target folder structure.
+
+    Returns:
+        pd.DataFrame: The DataFrame updated with a 'suggested_folder' column.
+    """
+    logging.info("Getting folder suggestions from Gemini...")
+    try:
+        model = genai.GenerativeModel('gemini-pro-latest')
+
+        # Create a detailed prompt for the AI
+        prompt_parts = [
+            "You are an expert file organization assistant.",
+            "You will be given a target folder structure and a list of files with their OCR text.",
+            "Your task is to determine the best subfolder for each file within the given structure.",
+            f"The root folder is '{FINAL_DOCUMENTS_ROOT.name}'. All suggestions must be a sub-path within this root.",
+            f"Target Folder Structure:\n---\n{folder_structure}\n---\n",
+            "Based on the file's content and name, decide the most appropriate folder for it.",
+            "Return a single JSON object where keys are the 'new_name' of each file, and values are the suggested subfolder path (e.g., 'Statements/Bank', 'Invoices', etc.).",
+            "If no folder is suitable, return an empty string for that file's value.",
+            "Only return the JSON object, with no extra explanation or markdown.",
+            "\nFile Data (JSON):\n",
+            report_df[['original_name', 'ocr_text', 'new_name']].to_json(orient='records')
+        ]
+
+        response = model.generate_content(prompt_parts)
+        # Clean the response to ensure it's valid JSON
+        cleaned_response_text = response.text.strip().replace('`', '').replace('json', '')
+        suggestions = json.loads(cleaned_response_text)
+
+        # Map the suggestions back to the DataFrame
+        report_df['suggested_folder'] = report_df['new_name'].map(suggestions)
+        logging.info("Successfully received and mapped folder suggestions.")
+        return report_df
+
+    except Exception as e:
+        logging.error(f"An error occurred while getting folder suggestions: {e}")
+        return None
+
+
+def move_files_to_folders(report_df, source_folder):
+    """
+    Moves files from the source folder to the suggested subfolders.
+
+    Args:
+        report_df (pd.DataFrame): DataFrame with 'new_name' and 'suggested_folder'.
+        source_folder (Path): The folder where the renamed files currently are.
+    """
+    logging.info("Moving files to their final destination...")
+    for index, row in report_df.iterrows():
+        new_name = row.get('new_name')
+        suggested_folder_str = row.get('suggested_folder')
+
+        if not new_name or not suggested_folder_str:
+            logging.warning(f"Skipping row due to missing 'new_name' or 'suggested_folder': {row}")
+            continue
+
+        source_path = source_folder / new_name
+        destination_folder = FINAL_DOCUMENTS_ROOT / suggested_folder_str
+        destination_path = destination_folder / new_name
+
+        if source_path.exists():
+            try:
+                # For Windows, handle potential long paths by using an absolute path
+                # with the special `\\?\` prefix. This allows paths longer than 260 chars.
+                if os.name == 'nt':
+                    abs_destination_folder = destination_folder.resolve()
+                    # `os.makedirs` and `shutil.move` work with this prefix.
+                    long_path_folder = "\\\\?\\" + str(abs_destination_folder)
+                    long_path_file = "\\\\?\\" + str(destination_path.resolve())
+
+                    os.makedirs(long_path_folder, exist_ok=True)
+                    shutil.move(str(source_path), long_path_file)
+                else:
+                    # On other systems, the standard approach is fine.
+                    destination_folder.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(source_path), str(destination_path))
+
+                logging.info(f"Moved '{source_path}' to '{destination_path}'")
+            except Exception as e:
+                logging.error(f"Could not move file '{source_path}': {e}")
+        else:
+            logging.warning(f"File '{source_path}' not found, skipping move.")
 
 
 # --- Web Server ---
@@ -279,7 +366,8 @@ app = Flask(__name__)
 @app.route('/')
 def index():
     """Renders the main page with the uploader."""
-    return render_template('index.html')
+    reports = sorted([f.name for f in REPORTS_FOLDER.glob('*.csv')], reverse=True)
+    return render_template('index.html', reports=reports)
 
 
 @app.route('/upload', methods=['POST'])
@@ -305,7 +393,68 @@ def process_route():
     return Response(process_files(), mimetype='text/event-stream')
 
 
+@app.route('/scan_structure')
+def scan_structure_route():
+    """Scans the final_documents directory and returns its structure."""
+    FINAL_DOCUMENTS_ROOT.mkdir(exist_ok=True)
+    # This is a simplified tree generator
+    tree_lines = []
+    for root, dirs, files in os.walk(FINAL_DOCUMENTS_ROOT):
+        level = root.replace(str(FINAL_DOCUMENTS_ROOT), '').count(os.sep)
+        if level >= 4: # Limit depth to 4 as requested
+            dirs[:] = [] # Stop descending further
+            continue
+        indent = ' ' * 4 * level
+        tree_lines.append(f'{indent}{os.path.basename(root)}/')
+    return Response('\n'.join(tree_lines), mimetype='text/plain')
+
+
+@app.route('/organize', methods=['POST'])
+def organize_route():
+    """Triggers the final organization of files based on a report."""
+    report_filename = request.form.get('report')
+    folder_structure = request.form.get('folder_structure')
+    trial_run = request.form.get('trial_run') == 'true'
+
+    if not report_filename or not folder_structure:
+        return "Missing report filename or folder structure.", 400
+
+    report_path = REPORTS_FOLDER / report_filename
+    if not report_path.exists():
+        return f"Report '{report_filename}' not found.", 404
+
+    try:
+        report_df = pd.read_csv(report_path)
+
+        # Get folder suggestions from AI
+        updated_df = get_folder_suggestions(report_df, folder_structure)
+        if updated_df is None:
+            return "Failed to get folder suggestions from the AI.", 500
+
+        if trial_run:
+            # For a trial run, just generate the plan and return it
+            plan = []
+            for _, row in updated_df.iterrows():
+                if pd.notna(row['suggested_folder']) and row['suggested_folder']:
+                    plan.append(f"MOVE '{row['new_name']}'\n  TO '{FINAL_DOCUMENTS_ROOT / row['suggested_folder']}'")
+                else:
+                    plan.append(f"SKIP '{row['new_name']}' (No folder suggested)")
+            return Response('\n\n'.join(plan), mimetype='text/plain')
+        else:
+            # For a real run, save the suggestions and move the files
+            updated_df.to_csv(report_path, index=False)
+            logging.info(f"Updated report '{report_filename}' with folder suggestions.")
+            move_files_to_folders(updated_df, OUTPUT_FOLDER)
+            return "Organization process complete! Files have been moved.", 200
+
+    except Exception as e:
+        logging.error(f"An error occurred during organization: {e}")
+        return f"An error occurred: {e}", 500
+
+
 if __name__ == '__main__':
     print("\n--- Starting Web Server ---")
     print("Open your browser and go to http://127.0.0.1:5000")
-    app.run(debug=True, host='0.0.0.0')
+    # Disabling the reloader to prevent silent exit issues.
+    # This is often necessary if unused .py files confuse the debugger.
+    app.run(debug=True, host='0.0.0.0', use_reloader=False)
