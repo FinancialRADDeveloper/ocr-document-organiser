@@ -3,19 +3,24 @@ import shutil
 import re
 from pathlib import Path
 
+import pandas as pd
 import pytesseract
-from flask import Flask, render_template
+from flask import Flask, render_template, request, Response
 import google.generativeai as genai
 from dotenv import load_dotenv
-import csv
+import pandas as pd
+import json
 from datetime import datetime
 from pdf2image import convert_from_path
-
+import logging
 
 # --- Configuration ---
 # Load environment variables from .env file
 load_dotenv()
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+
+# --- Logging Configuration ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 
 # --- Tesseract Configuration for Windows ---
 # If running on Windows, specify the path to the Tesseract executable.
@@ -32,6 +37,7 @@ REPORTS_FOLDER = Path("reports")
 PROCESSED_FOLDER = Path("processing_completed")
 FAILED_FOLDER = Path("processing_failed")
 
+
 # --- AI Model Interaction ---
 def list_gemini_models():
     """Lists available Gemini models for debugging."""
@@ -43,7 +49,6 @@ def list_gemini_models():
     except Exception as e:
         print(f"Could not list models: {e}")
     print("---------------------------------\n")
-
 
 
 # --- AI Model Interaction ---
@@ -73,31 +78,30 @@ def extract_text_from_pdf(pdf_path):
 
 def extract_text_from_pdf_local(pdf_path):
     """Extracts text from a PDF locally using Tesseract OCR."""
-    print(f"  -> Extracting text locally from {pdf_path.name}...")
+    yield f"  -> Extracting text locally from {pdf_path.name}..."
     try:
         # Note: pdf2image requires the poppler utility to be installed and in your PATH.
         images = convert_from_path(pdf_path)
 
         full_text = ""
         for i, image in enumerate(images):
-            print(f"    -> Processing page {i+1}/{len(images)}")
+            yield f"    -> Processing page {i + 1}/{len(images)}"
             full_text += pytesseract.image_to_string(image) + "\n"
 
-        print("  -> Local text extraction complete.")
+        yield "  -> Local text extraction complete."
         return full_text
     except Exception as e:
-        print(f"  -> An error occurred during local text extraction: {e}")
-        print("  -> Please ensure Tesseract OCR and poppler are installed and configured correctly.")
+        yield f"  -> An error occurred during local text extraction: {e}"
+        yield "  -> Please ensure Tesseract OCR and poppler are installed and configured correctly."
         return None
-
 
 
 def generate_filename_from_text(document_text):
     """Generates a new filename from the document's text content."""
     if not document_text:
-        return None
+        return
 
-    print("  -> Generating new filename from text...")
+    yield "  -> Generating new filename from text..."
     try:
         # Use a reasoning model, taken from your available list
         model = genai.GenerativeModel('gemini-pro-latest')
@@ -128,11 +132,11 @@ def generate_filename_from_text(document_text):
         if not clean_name.lower().endswith('.pdf'):
             clean_name += '.pdf'
 
-        print(f"  -> Suggested filename: {clean_name}")
+        yield f"  -> Suggested filename: {clean_name}"
         return clean_name
 
     except Exception as e:
-        print(f"  -> An error occurred with the AI model: {e}")
+        yield f"  -> An error occurred with the AI model: {e}"
         return None
 
 
@@ -151,14 +155,17 @@ def archive_original_file(original_path, success):
 
         # Move the file
         shutil.move(original_path, destination_folder / original_path.name)
-        print(f"  -> Moved original file to {status} folder.")
+        yield f"  -> Moved original file to {status} folder."
     except Exception as e:
-        print(f"  -> Error moving original file: {e}")
+        yield f"  -> Error moving original file: {e}"
 
 
 # --- File Processing ---
-def save_results_to_csv(results):
-    """Saves processing results to a timestamped CSV file."""
+def save_results_to_csv(results_data):
+    """Saves processing results to a timestamped CSV file using pandas."""
+    if not results_data:
+        print("No results to save.")
+        return None
 
     # Ensure reports folder exists
     REPORTS_FOLDER.mkdir(exist_ok=True)
@@ -167,21 +174,15 @@ def save_results_to_csv(results):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_filename = REPORTS_FOLDER / f"processing_report_{timestamp}.csv"
 
-    # Write results to CSV
     try:
-        with open(csv_filename, 'w', newline='', encoding='utf-8') as csvfile:
-            fieldnames = ['timestamp', 'original_name', 'original_path', 'new_name', 'new_path']
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        # Create a DataFrame from the results
+        df = pd.DataFrame(results_data)
 
-            writer.writeheader()
-            for result in results:
-                writer.writerow({
-                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    'original_name': result['original_name'],
-                    'original_path': result['original_path'],
-                    'new_name': result['new_name'],
-                    'new_path': result['new_path']
-                })
+        # Define the columns for the CSV
+        df = df[['original_name', 'ocr_text', 'new_name']]
+
+        # Save to CSV
+        df.to_csv(csv_filename, index=False, encoding='utf-8')
 
         print(f"\nResults saved to: {csv_filename}")
         return str(csv_filename)
@@ -191,75 +192,117 @@ def save_results_to_csv(results):
 
 
 def process_files():
-    """Processes all PDF files in the input folder."""
+    """Processes all PDF files in the input folder and yields progress."""
+
+    def log_and_stream(message):
+        """Logs to console and yields for SSE stream."""
+        logging.info(message)
+        return f"data: {message}\n\n"
+
+    def run_sub_process(generator):
+        """Consumes a generator, logs and yields its messages, and returns its final value."""
+        while True:
+            try:
+                message = next(generator)
+                yield log_and_stream(message)
+            except StopIteration as e:
+                return e.value
 
     # Ensure folders exist
     INPUT_FOLDER.mkdir(exist_ok=True)
     OUTPUT_FOLDER.mkdir(exist_ok=True)
 
-    results = []
+    results_for_web = []
+    results_for_csv = []
 
-    print("Starting file processing...")
+    yield log_and_stream("Starting file processing...")
 
     # list the models once for debugging
     # list_gemini_models()
 
     # Iterate through files in the input folder
     for original_path in INPUT_FOLDER.glob("*.pdf"):
-        print(f"Processing: {original_path.name}")
+        yield log_and_stream(f"Processing: {original_path.name}")
 
         # Step 1: Extract text from the PDF
-        document_text = extract_text_from_pdf_local(original_path)
+        document_text = yield from run_sub_process(extract_text_from_pdf_local(original_path))
 
         if not document_text:
-            print(f"  Error in processing: {original_path.name}")
+            yield from run_sub_process(archive_original_file(original_path, success=False))
             continue
 
         # Step 2: Generate a new filename from the extracted text
-        suggested_name = generate_filename_from_text(document_text)
+        suggested_name = yield from run_sub_process(generate_filename_from_text(document_text))
 
         if not suggested_name:
-            print(f"  -> Could not generate a name for {original_path.name}. Skipping.")
-            archive_original_file(original_path, success=False)  # Move to failed folder
+            yield log_and_stream(f"  -> Could not generate a name for {original_path.name}. Skipping.")
+            yield from run_sub_process(archive_original_file(original_path, success=False))
             continue
 
         # Copy and rename the file
         new_path = OUTPUT_FOLDER / suggested_name
         shutil.copy(original_path, new_path)
 
-        print(f"  -> Renamed and copied to: {new_path.name}")
+        yield log_and_stream(f"  -> Renamed and copied to: {new_path.name}")
 
         # Store result for web display
-        results.append({
+        results_for_web.append({
             'original_name': original_path.name,
-            'original_path': str(original_path.resolve()),
-            'new_name': new_path.name,
-            'new_path': str(new_path.resolve())
+            'new_name': suggested_name,
+        })
+        # Store results for the CSV report
+        results_for_csv.append({
+            'original_name': original_path.name,
+            'ocr_text': document_text,
+            'new_name': suggested_name,
         })
 
         # Archive the original file
-        archive_original_file(original_path, success=True)
+        yield from run_sub_process(archive_original_file(original_path, success=True))
 
-    print("File processing complete.")
+    yield log_and_stream("File processing complete.")
 
     # Save results to CSV file
-    if results:
-        save_results_to_csv(results)
+    if results_for_csv:
+        csv_path = save_results_to_csv(results_for_csv)
+        if csv_path:
+            yield log_and_stream(f"Results saved to CSV: {csv_path}")
 
-    return results
+    # Use a specific event to send the final data
+    yield f"event: end\\ndata: {json.dumps(results_for_web)}\\n\\n"
 
 
 # --- Web Server ---
 app = Flask(__name__)
 
-# Process files on startup and store results globally
-processed_results = process_files()
-
 
 @app.route('/')
-def show_results():
-    """Renders the results page."""
-    return render_template('results.html', results=processed_results)
+def index():
+    """Renders the main page with the uploader."""
+    return render_template('index.html')
+
+
+@app.route('/upload', methods=['POST'])
+def upload_route():
+    """Handles file uploads."""
+    INPUT_FOLDER.mkdir(exist_ok=True)
+
+    if 'files[]' not in request.files:
+        return 'No file part', 400
+
+    files = request.files.getlist('files[]')
+
+    for file in files:
+        if file.filename and file.filename.lower().endswith('.pdf'):
+            file.save(INPUT_FOLDER / file.filename)
+
+    return 'Upload complete', 200
+
+
+@app.route('/process')
+def process_route():
+    """Triggers the file processing and streams back the status."""
+    return Response(process_files(), mimetype='text/event-stream')
 
 
 if __name__ == '__main__':
