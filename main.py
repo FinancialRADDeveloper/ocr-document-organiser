@@ -8,11 +8,11 @@ import pytesseract
 from flask import Flask, render_template, request, Response
 import google.generativeai as genai
 from dotenv import load_dotenv
-import pandas as pd
 import json
 from datetime import datetime
 from pdf2image import convert_from_path
 import logging
+import sys
 
 # --- Configuration ---
 # Load environment variables from .env file
@@ -20,7 +20,18 @@ load_dotenv()
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 # --- Logging Configuration ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+# Remove all existing handlers and configure fresh
+for handler in logging.root.handlers[:]:
+    logging.root.removeHandler(handler)
+
+# Configure logger with console handler
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+
+logger = logging.getLogger(__name__)
 
 # --- Tesseract Configuration for Windows ---
 # If running on Windows, specify the path to the Tesseract executable.
@@ -41,20 +52,20 @@ FAILED_FOLDER = Path("processing_failed")
 # --- AI Model Interaction ---
 def list_gemini_models():
     """Lists available Gemini models for debugging."""
-    print("\n--- Available Gemini Models ---")
+    logger.info("--- Available Gemini Models ---")
     try:
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
-                print(f"- {m.name}")
+                logger.info(f"- {m.name}")
     except Exception as e:
-        print(f"Could not list models: {e}")
-    print("---------------------------------\n")
+        logger.error(f"Could not list models: {e}")
+    logger.info("---------------------------------")
 
 
 # --- AI Model Interaction ---
 def extract_text_from_pdf(pdf_path):
     """Uploads a PDF to Gemini, extracts text, and deletes the file."""
-    print(f"  -> Uploading and extracting text from {pdf_path.name}...")
+    logger.info(f"  -> Uploading and extracting text from {pdf_path.name}...")
     uploaded_file = None
     try:
         # Use a model that can handle PDF input, taken from your available list
@@ -64,20 +75,21 @@ def extract_text_from_pdf(pdf_path):
         uploaded_file = genai.upload_file(path=pdf_path)
         response = model.generate_content(["Extract all text from this document.", uploaded_file])
 
-        print("  -> Text extraction complete.")
+        logger.info("  -> Text extraction complete.")
         return response.text
     except Exception as e:
-        print(f"  -> An error occurred during text extraction: {e}")
+        logger.error(f"  -> An error occurred during text extraction: {e}")
         return None
     finally:
         # Clean up the file from the server
         if uploaded_file:
             uploaded_file.delete()
-            print("  -> Temporary file deleted.")
+            logger.info("  -> Temporary file deleted.")
 
 
 def extract_text_from_pdf_local(pdf_path):
     """Extracts text from a PDF locally using Tesseract OCR."""
+    logger.info(f"  -> Extracting text locally from {pdf_path.name}...")
     yield f"  -> Extracting text locally from {pdf_path.name}..."
     try:
         # Note: pdf2image requires the poppler utility to be installed and in your PATH.
@@ -85,13 +97,18 @@ def extract_text_from_pdf_local(pdf_path):
 
         full_text = ""
         for i, image in enumerate(images):
-            yield f"    -> Processing page {i + 1}/{len(images)}"
+            msg = f"    -> Processing page {i + 1}/{len(images)}"
+            logger.info(msg)
+            yield msg
             full_text += pytesseract.image_to_string(image) + "\n"
 
+        logger.info("  -> Local text extraction complete.")
         yield "  -> Local text extraction complete."
         return full_text
     except Exception as e:
-        yield f"  -> An error occurred during local text extraction: {e}"
+        error_msg = f"  -> An error occurred during local text extraction: {e}"
+        logger.error(error_msg)
+        yield error_msg
         yield "  -> Please ensure Tesseract OCR and poppler are installed and configured correctly."
         return None
 
@@ -101,6 +118,7 @@ def generate_filename_from_text(document_text):
     if not document_text:
         return
 
+    logger.info("  -> Generating new filename from text...")
     yield "  -> Generating new filename from text..."
     try:
         # Use a reasoning model, taken from your available list
@@ -132,11 +150,14 @@ def generate_filename_from_text(document_text):
         if not clean_name.lower().endswith('.pdf'):
             clean_name += '.pdf'
 
+        logger.info(f"  -> Suggested filename: {clean_name}")
         yield f"  -> Suggested filename: {clean_name}"
         return clean_name
 
     except Exception as e:
-        yield f"  -> An error occurred with the AI model: {e}"
+        error_msg = f"  -> An error occurred with the AI model: {e}"
+        logger.error(error_msg)
+        yield error_msg
         return None
 
 
@@ -155,16 +176,20 @@ def archive_original_file(original_path, success):
 
         # Move the file
         shutil.move(original_path, destination_folder / original_path.name)
-        yield f"  -> Moved original file to {status} folder."
+        msg = f"  -> Moved original file to {status} folder."
+        logger.info(msg)
+        yield msg
     except Exception as e:
-        yield f"  -> Error moving original file: {e}"
+        error_msg = f"  -> Error moving original file: {e}"
+        logger.error(error_msg)
+        yield error_msg
 
 
 # --- File Processing ---
 def save_results_to_csv(results_data):
     """Saves processing results to a timestamped CSV file using pandas."""
     if not results_data:
-        print("No results to save.")
+        logger.info("No results to save.")
         return None
 
     # Ensure reports folder exists
@@ -184,19 +209,19 @@ def save_results_to_csv(results_data):
         # Save to CSV
         df.to_csv(csv_filename, index=False, encoding='utf-8')
 
-        print(f"\nResults saved to: {csv_filename}")
+        logger.info(f"Results saved to: {csv_filename}")
         return str(csv_filename)
     except Exception as e:
-        print(f"Error saving CSV file: {e}")
+        logger.error(f"Error saving CSV file: {e}")
         return None
 
 
 def process_files():
     """Processes all PDF files in the input folder and yields progress."""
 
-    def log_and_stream(message):
+    def log_and_stream(message, level=logging.INFO):
         """Logs to console and yields for SSE stream."""
-        logging.info(message)
+        logger.log(level, message)
         return f"data: {message}\n\n"
 
     def run_sub_process(generator):
@@ -208,68 +233,80 @@ def process_files():
             except StopIteration as e:
                 return e.value
 
-    # Ensure folders exist
-    INPUT_FOLDER.mkdir(exist_ok=True)
-    OUTPUT_FOLDER.mkdir(exist_ok=True)
-
     results_for_web = []
     results_for_csv = []
 
-    yield log_and_stream("Starting file processing...")
+    try:
+        # Ensure folders exist
+        INPUT_FOLDER.mkdir(exist_ok=True)
+        OUTPUT_FOLDER.mkdir(exist_ok=True)
 
-    # list the models once for debugging
-    # list_gemini_models()
+        yield log_and_stream("Starting file processing...")
 
-    # Iterate through files in the input folder
-    for original_path in INPUT_FOLDER.glob("*.pdf"):
-        yield log_and_stream(f"Processing: {original_path.name}")
+        # Iterate through files in the input folder
+        for original_path in INPUT_FOLDER.glob("*.pdf"):
+            yield log_and_stream(f"Processing: {original_path.name}")
 
-        # Step 1: Extract text from the PDF
-        document_text = yield from run_sub_process(extract_text_from_pdf_local(original_path))
+            # Step 1: Extract text from the PDF
+            document_text = yield from run_sub_process(extract_text_from_pdf_local(original_path))
 
-        if not document_text:
-            yield from run_sub_process(archive_original_file(original_path, success=False))
-            continue
+            if not document_text:
+                yield from run_sub_process(archive_original_file(original_path, success=False))
+                continue
 
-        # Step 2: Generate a new filename from the extracted text
-        suggested_name = yield from run_sub_process(generate_filename_from_text(document_text))
+            # Step 2: Generate a new filename from the extracted text
+            suggested_name = yield from run_sub_process(generate_filename_from_text(document_text))
 
-        if not suggested_name:
-            yield log_and_stream(f"  -> Could not generate a name for {original_path.name}. Skipping.")
-            yield from run_sub_process(archive_original_file(original_path, success=False))
-            continue
+            if not suggested_name:
+                yield log_and_stream(f"  -> Could not generate a name for {original_path.name}. Skipping.", level=logging.WARNING)
+                yield from run_sub_process(archive_original_file(original_path, success=False))
+                continue
 
-        # Copy and rename the file
-        new_path = OUTPUT_FOLDER / suggested_name
-        shutil.copy(original_path, new_path)
+            # Copy and rename the file
+            new_path = OUTPUT_FOLDER / suggested_name
+            shutil.copy(original_path, new_path)
 
-        yield log_and_stream(f"  -> Renamed and copied to: {new_path.name}")
+            yield log_and_stream(f"  -> Renamed and copied to: {new_path.name}")
 
-        # Store result for web display
-        results_for_web.append({
-            'original_name': original_path.name,
-            'new_name': suggested_name,
-        })
-        # Store results for the CSV report
-        results_for_csv.append({
-            'original_name': original_path.name,
-            'ocr_text': document_text,
-            'new_name': suggested_name,
-        })
+            # Store result for web display
+            results_for_web.append({
+                'original_name': original_path.name,
+                'new_name': suggested_name,
+            })
+            # Store results for the CSV report
+            results_for_csv.append({
+                'original_name': original_path.name,
+                'ocr_text': document_text,
+                'new_name': suggested_name,
+            })
 
-        # Archive the original file
-        yield from run_sub_process(archive_original_file(original_path, success=True))
+            # Archive the original file
+            yield from run_sub_process(archive_original_file(original_path, success=True))
 
-    yield log_and_stream("File processing complete.")
+        yield log_and_stream("File processing complete.")
 
-    # Save results to CSV file
-    if results_for_csv:
-        csv_path = save_results_to_csv(results_for_csv)
-        if csv_path:
-            yield log_and_stream(f"Results saved to CSV: {csv_path}")
+        # Save results to CSV file
+        if results_for_csv:
+            csv_path = save_results_to_csv(results_for_csv)
+            if csv_path:
+                yield log_and_stream(f"Final report is available at: {csv_path}")
+            else:
+                yield log_and_stream("Error: Failed to save the processing report.", level=logging.ERROR)
 
-    # Use a specific event to send the final data
-    yield f"event: end\\ndata: {json.dumps(results_for_web)}\\n\\n"
+        # Use a specific event to send the final data and end the stream
+        json_payload = json.dumps(results_for_web)
+        yield f"event: end\ndata: {json_payload}\n\n"
+
+    except Exception as e:
+        # Catch any unexpected errors during processing
+        error_message = "An unexpected error occurred during processing. Check console for details."
+        # Log the full exception and traceback to the console
+        logger.error(f"An unexpected error occurred during processing: {e}", exc_info=True)
+        yield log_and_stream(error_message, level=logging.ERROR)
+
+        # Still send an 'end' event so the client knows processing has stopped
+        error_payload = json.dumps({"error": error_message})
+        yield f"event: end\ndata: {error_payload}\n\n"
 
 
 # --- Web Server ---
@@ -278,8 +315,34 @@ app = Flask(__name__)
 
 @app.route('/')
 def index():
-    """Renders the main page with the uploader."""
-    return render_template('index.html')
+    """Renders the main page with the uploader and latest report."""
+    REPORTS_FOLDER.mkdir(exist_ok=True)
+    report_files = sorted(REPORTS_FOLDER.glob("*.csv"), key=os.path.getmtime, reverse=True)
+
+    latest_report_data = []
+    if report_files:
+        latest_report_path = report_files[0]
+        try:
+            df = pd.read_csv(latest_report_path)
+            # Truncate ocr_text for display
+            if 'ocr_text' in df.columns:
+                df['ocr_text'] = df['ocr_text'].astype(str).str.slice(0, 100) + '...'
+            else:
+                df['ocr_text'] = "N/A"
+
+            # Ensure required columns exist, fill with placeholder if not
+            for col in ['original_name', 'new_name', 'ocr_text']:
+                if col not in df.columns:
+                    df[col] = "N/A"
+
+            # Select and reorder columns for display
+            df = df[['original_name', 'new_name', 'ocr_text']]
+
+            latest_report_data = df.to_dict(orient='records')
+        except Exception as e:
+            logger.error(f"Error reading or processing report file: {e}")
+
+    return render_template('index.html', latest_report=latest_report_data)
 
 
 @app.route('/upload', methods=['POST'])
@@ -306,6 +369,6 @@ def process_route():
 
 
 if __name__ == '__main__':
-    print("\n--- Starting Web Server ---")
-    print("Open your browser and go to http://127.0.0.1:5000")
+    logger.info("--- Starting Web Server ---")
+    logger.info("Open your browser and go to http://127.0.0.1:5000")
     app.run(debug=True, host='0.0.0.0')
