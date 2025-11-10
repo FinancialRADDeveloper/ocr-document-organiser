@@ -20,15 +20,18 @@ load_dotenv()
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 # --- Logging Configuration ---
+# Note: Avoid forcing unbuffered stdout/stderr to keep IDE debuggers stable.
+# If you need unbuffered logs, configure logging handlers instead of re-wrapping sys.stdout/sys.stderr.
+
 # Remove all existing handlers and configure fresh
 for handler in logging.root.handlers[:]:
     logging.root.removeHandler(handler)
 
-# Configure logger with console handler
+# Configure logger with console handler pointing to stderr (which Flask doesn't redirect)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
+    handlers=[logging.StreamHandler(sys.stderr)]
 )
 
 logger = logging.getLogger(__name__)
@@ -190,6 +193,7 @@ def save_results_to_csv(results_data):
     """Saves processing results to a timestamped CSV file using pandas."""
     if not results_data:
         logger.info("No results to save.")
+        print("No results to save.", file=sys.stderr, flush=True)
         return None
 
     # Ensure reports folder exists
@@ -210,9 +214,11 @@ def save_results_to_csv(results_data):
         df.to_csv(csv_filename, index=False, encoding='utf-8')
 
         logger.info(f"Results saved to: {csv_filename}")
+        print(f"Results saved to: {csv_filename}", file=sys.stderr, flush=True)
         return str(csv_filename)
     except Exception as e:
         logger.error(f"Error saving CSV file: {e}")
+        print(f"Error saving CSV file: {e}", file=sys.stderr, flush=True)
         return None
 
 
@@ -222,6 +228,7 @@ def process_files():
     def log_and_stream(message, level=logging.INFO):
         """Logs to console and yields for SSE stream."""
         logger.log(level, message)
+        print(message, file=sys.stderr, flush=True)  # Print to stderr to avoid Flask redirection
         return f"data: {message}\n\n"
 
     def run_sub_process(generator):
@@ -302,6 +309,9 @@ def process_files():
         error_message = "An unexpected error occurred during processing. Check console for details."
         # Log the full exception and traceback to the console
         logger.error(f"An unexpected error occurred during processing: {e}", exc_info=True)
+        print(f"ERROR: An unexpected error occurred during processing: {e}", file=sys.stderr, flush=True)
+        import traceback
+        traceback.print_exc(file=sys.stderr)
         yield log_and_stream(error_message, level=logging.ERROR)
 
         # Still send an 'end' event so the client knows processing has stopped
@@ -341,6 +351,7 @@ def index():
             latest_report_data = df.to_dict(orient='records')
         except Exception as e:
             logger.error(f"Error reading or processing report file: {e}")
+            print(f"Error reading or processing report file: {e}", file=sys.stderr, flush=True)
 
     return render_template('index.html', latest_report=latest_report_data)
 
@@ -371,4 +382,8 @@ def process_route():
 if __name__ == '__main__':
     logger.info("--- Starting Web Server ---")
     logger.info("Open your browser and go to http://127.0.0.1:5000")
-    app.run(debug=True, host='0.0.0.0')
+    print("--- Starting Web Server ---", file=sys.stderr, flush=True)
+    print("Open your browser and go to http://127.0.0.1:5000", file=sys.stderr, flush=True)
+    # Enable Flask debug only if FLASK_DEBUG env var is set, to avoid interfering with IDE debuggers
+    use_debug = os.getenv('FLASK_DEBUG', '0') in ('1', 'true', 'True', 'yes')
+    app.run(debug=use_debug, host='0.0.0.0', use_reloader=False)
