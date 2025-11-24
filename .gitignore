@@ -2,3 +2,12 @@
 /processing_completed/
 /processing_failed/
 /reports/
+/input_files/
+/.idea/vcs.xml
+/.idea/misc.xml
+/.env
+/docker_run
+/.idea/modules.xml
+/.idea/ocr-document-organiser.iml
+/.idea/inspectionProfiles/profiles_settings.xml
+/.idea/inspectionProfiles/Project_Default.xml
