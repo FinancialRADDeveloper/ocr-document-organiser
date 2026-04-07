@@ -125,7 +125,7 @@ def generate_filename_from_text(document_text):
     yield "  -> Generating new filename from text..."
     try:
         # Use a reasoning model, taken from your available list
-        model = genai.GenerativeModel('gemini-pro-latest')
+        model = genai.GenerativeModel('gemini-2.0-flash')
 
         prompt = """
         You are an expert file organization assistant. Based on the document text provided,
@@ -136,7 +136,7 @@ def generate_filename_from_text(document_text):
         - Use the document's main date for YYYY-MM-DD. If no date is found, use 'Undated'.
         - Extract the primary company name.
         - Briefly describe the document type (e.g., 'Annuity Statement', 'Invoice', 'Insurance Policy').
-        - Include a short subject or name (e.g., 'J Hunt').
+        - Include a short subject or name if present (e.g., 'A Smith').
         - Add a unique reference or policy number if available.
         - If a component is not available in the document, omit it from the filename.
         - Ensure the final filename is valid for Windows and macOS (no invalid characters like /\\:*?"<>|).
@@ -221,24 +221,24 @@ def save_results_to_csv(results_data):
         print(f"Error saving CSV file: {e}", file=sys.stderr, flush=True)
         return None
 
+def log_and_stream(message, level=logging.INFO):
+    """Logs to console and yields for SSE stream."""
+    logger.log(level, message)
+    print(message, file=sys.stderr, flush=True)  # Print to stderr to avoid Flask redirection
+    return f"data: {message}\n\n"
+
+def run_sub_process(generator):
+    """Consumes a generator, logs and yields its messages, and returns its final value."""
+    while True:
+        try:
+            message = next(generator)
+            yield log_and_stream(message)
+        except StopIteration as e:
+            return e.value
+
 
 def process_files():
     """Processes all PDF files in the input folder and yields progress."""
-
-    def log_and_stream(message, level=logging.INFO):
-        """Logs to console and yields for SSE stream."""
-        logger.log(level, message)
-        print(message, file=sys.stderr, flush=True)  # Print to stderr to avoid Flask redirection
-        return f"data: {message}\n\n"
-
-    def run_sub_process(generator):
-        """Consumes a generator, logs and yields its messages, and returns its final value."""
-        while True:
-            try:
-                message = next(generator)
-                yield log_and_stream(message)
-            except StopIteration as e:
-                return e.value
 
     results_for_web = []
     results_for_csv = []
@@ -271,6 +271,12 @@ def process_files():
 
             # Copy and rename the file
             new_path = OUTPUT_FOLDER / suggested_name
+
+            # check that a file with the same name does not already exist, and rename if it does
+            while new_path.exists():
+                new_path = OUTPUT_FOLDER / (suggested_name[:-4] + f" ({datetime.now().strftime('%Y%m%d_%H%M%S')}).pdf")
+
+
             shutil.copy(original_path, new_path)
 
             yield log_and_stream(f"  -> Renamed and copied to: {new_path.name}")

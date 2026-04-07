@@ -3,195 +3,734 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>File Organization Results</title>
+    <title>AI Document Organiser</title>
     <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        /* ── FATX Brand Tokens ── */
+        :root {
+            --bg-deep:      #0D1B2A;
+            --bg-surface:   #111F2D;
+            --bg-card:      #162638;
+            --bg-raised:    #1F3A52;
+            --accent-cyan:  #00C2D1;
+            --accent-teal:  #008A95;
+            --accent-gold:  #F5C842;
+            --accent-red:   #E8334A;
+            --text-primary: #FFFFFF;
+            --text-muted:   #8FA8BF;
+            --text-dim:     #4D6880;
+            --border:       rgba(0, 194, 209, 0.15);
+            --border-strong:rgba(0, 194, 209, 0.4);
+            --font-ui:      "Calibri Light", "Segoe UI", system-ui, sans-serif;
+            --font-mono:    "Consolas", "SF Mono", "Liberation Mono", monospace;
+        }
+
+        *, *::before, *::after {
+            box-sizing: border-box;
             margin: 0;
-            background-color: #f4f7f9;
-            color: #333;
-            padding: 2em;
+            padding: 0;
         }
-        .container {
-            max-width: 1000px;
-            margin: auto;
-            background-color: #ffffff;
-            padding: 2em;
+
+        body {
+            font-family: var(--font-ui);
+            background-color: var(--bg-deep);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            line-height: 1.6;
+        }
+
+        /* ── Header ── */
+        header {
+            background-color: var(--bg-surface);
+            border-bottom: 1px solid var(--border-strong);
+            padding: 2.5rem 2rem 2rem;
+            text-align: center;
+            position: relative;
+        }
+
+        .brand-wordmark {
+            font-size: 1.8rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            color: var(--accent-cyan);
+            text-transform: uppercase;
+            margin-bottom: 0.75rem;
+            display: block;
+        }
+
+        header h1 {
+            font-size: 2.1rem;
+            font-weight: 300;
+            letter-spacing: -0.5px;
+            color: var(--text-primary);
+            margin-bottom: 0.6rem;
+        }
+
+        header h1 strong {
+            font-weight: 700;
+        }
+
+        header p.subtitle {
+            font-size: 1rem;
+            color: var(--text-muted);
+            font-weight: 400;
+            max-width: 520px;
+            margin: 0 auto;
+        }
+
+        /* ── Main layout ── */
+        main {
+            flex: 1;
+            max-width: 900px;
+            width: 100%;
+            margin: 0 auto;
+            padding: 2.5rem 1.5rem 4rem;
+        }
+
+        /* ── Card ── */
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 2rem;
+            margin-bottom: 1.75rem;
+        }
+
+        .card-title {
+            font-size: 0.7rem;
+            font-weight: 700;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            color: var(--accent-cyan);
+            margin-bottom: 1.25rem;
+        }
+
+        /* ── How it works ── */
+        .steps {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+        }
+
+        .step {
+            background: var(--bg-raised);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1.25rem 1rem;
+            text-align: center;
+        }
+
+        .step-number {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 34px;
+            height: 34px;
+            border-radius: 50%;
+            background-color: var(--accent-cyan);
+            color: var(--bg-deep);
+            font-weight: 700;
+            font-size: 0.85rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .step h3 {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 0.35rem;
+        }
+
+        .step p {
+            font-size: 0.82rem;
+            color: var(--text-muted);
+            line-height: 1.5;
+        }
+
+        /* ── Drop zone ── */
+        .drop-zone {
+            border: 2px dashed var(--border-strong);
+            border-radius: 10px;
+            background-color: var(--bg-surface);
+            padding: 2.5rem 2rem;
+            text-align: center;
+            transition: border-color 0.2s, background-color 0.2s;
+            cursor: pointer;
+        }
+
+        .drop-zone:hover,
+        .drop-zone.drag-over {
+            border-color: var(--accent-cyan);
+            background-color: rgba(0, 194, 209, 0.05);
+        }
+
+        .drop-zone-icon {
+            font-size: 2.2rem;
+            margin-bottom: 0.75rem;
+            display: block;
+        }
+
+        .drop-zone h3 {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 0.4rem;
+        }
+
+        .drop-zone p {
+            font-size: 0.875rem;
+            color: var(--text-muted);
+            margin-bottom: 1.25rem;
+        }
+
+        #file-input { display: none; }
+
+        /* ── Buttons ── */
+        .btn-primary {
+            display: inline-block;
+            background-color: var(--accent-cyan);
+            color: var(--bg-deep);
+            border: none;
+            border-radius: 7px;
+            padding: 0.6rem 1.5rem;
+            font-size: 0.875rem;
+            font-weight: 700;
+            font-family: var(--font-ui);
+            cursor: pointer;
+            transition: background-color 0.2s, transform 0.1s;
+            text-decoration: none;
+            letter-spacing: 0.02em;
+        }
+
+        .btn-primary:hover { background-color: #00d9ea; }
+        .btn-primary:active { transform: scale(0.98); }
+        .btn-primary:disabled {
+            background-color: var(--text-dim);
+            color: var(--bg-card);
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-secondary {
+            display: inline-block;
+            background: transparent;
+            color: var(--accent-cyan);
+            border: 1px solid var(--border-strong);
+            border-radius: 7px;
+            padding: 0.6rem 1.5rem;
+            font-size: 0.875rem;
+            font-weight: 600;
+            font-family: var(--font-ui);
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .btn-secondary:hover { background-color: rgba(0,194,209,0.08); }
+
+        #selected-files {
+            margin-top: 0.75rem;
+            font-size: 0.82rem;
+            color: var(--accent-gold);
+            min-height: 1.2em;
+        }
+
+        .upload-actions {
+            margin-top: 1.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 1rem;
+        }
+
+        /* ── Status log ── */
+        #status-container { display: none; }
+
+        .spinner-row {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            margin-bottom: 0.75rem;
+            font-size: 0.82rem;
+            color: var(--text-muted);
+        }
+
+        .spinner {
+            width: 14px;
+            height: 14px;
+            border: 2px solid var(--text-dim);
+            border-top-color: var(--accent-cyan);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        #status-log {
+            list-style: none;
+            padding: 0.75rem 1rem;
+            background: var(--bg-surface);
+            border: 1px solid var(--border);
             border-radius: 8px;
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+            max-height: 220px;
+            overflow-y: auto;
+            font-family: var(--font-mono);
+            font-size: 0.78rem;
+            line-height: 1.7;
         }
-        h1 {
-            color: #1a253c;
-            border-bottom: 2px solid #e0e0e0;
-            padding-bottom: 0.5em;
+
+        #status-log li            { color: #4DB6AC; }
+        #status-log li.log-info   { color: var(--accent-cyan); }
+        #status-log li.log-error  { color: var(--accent-red); }
+        #status-log li.log-done   { color: var(--accent-gold); }
+
+        /* ── Summary banner ── */
+        .summary-banner {
+            display: flex;
+            gap: 1.5rem;
+            flex-wrap: wrap;
+            padding: 1rem 1.25rem;
+            background: var(--bg-raised);
+            border: 1px solid var(--border-strong);
+            border-radius: 8px;
+            margin-bottom: 1.5rem;
+            font-size: 0.85rem;
         }
+
+        .summary-stat { display: flex; flex-direction: column; }
+        .summary-stat .val {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--accent-cyan);
+            line-height: 1;
+        }
+        .summary-stat .val.val-fail { color: var(--accent-red); }
+        .summary-stat .lbl {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            margin-top: 0.2rem;
+        }
+
+        /* ── Results ── */
+        #results-section { display: none; }
+
+        .results-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 1rem;
+        }
+
+        .result-card {
+            background: var(--bg-surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1.25rem;
+            border-left: 3px solid var(--accent-cyan);
+            transition: border-color 0.2s;
+        }
+
+        .result-card:hover { border-left-color: #00d9ea; }
+        .result-card.failed { border-left-color: var(--accent-red); }
+
+        .result-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 0.75rem;
+        }
+
+        .doc-icon { font-size: 1.6rem; line-height: 1; }
+
+        .badge {
+            font-size: 0.68rem;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            padding: 0.2em 0.55em;
+            border-radius: 4px;
+        }
+
+        .badge-success {
+            background: rgba(0,194,209,0.15);
+            color: var(--accent-cyan);
+            border: 1px solid rgba(0,194,209,0.3);
+        }
+
+        .badge-fail {
+            background: rgba(232,51,74,0.15);
+            color: var(--accent-red);
+            border: 1px solid rgba(232,51,74,0.3);
+        }
+
+        .new-filename {
+            font-family: var(--font-mono);
+            font-size: 0.78rem;
+            color: var(--text-primary);
+            word-break: break-all;
+            line-height: 1.5;
+            margin-bottom: 0.5rem;
+        }
+
+        .orig-filename {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            word-break: break-all;
+        }
+
+        .orig-filename span { color: var(--text-muted); }
+
+        /* ── Previous results table ── */
+        #previous-results-section {
+            display: {% if latest_report %}block{% else %}none{% endif %};
+        }
+
         table {
             width: 100%;
             border-collapse: collapse;
-            margin-top: 2em;
+            font-size: 0.85rem;
         }
-        th, td {
-            padding: 12px 15px;
-            text-align: left;
-            border-bottom: 1px solid #ddd;
-        }
-        th {
-            background-color: #f8f9fa;
+
+        thead th {
+            background-color: var(--bg-raised);
+            color: var(--text-muted);
             font-weight: 600;
+            font-size: 0.72rem;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            padding: 0.75rem 1rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border-strong);
         }
-        tr:hover {
-            background-color: #f1f1f1;
+
+        tbody tr { border-bottom: 1px solid var(--border); }
+        tbody tr:last-child { border-bottom: none; }
+        tbody tr:hover { background-color: var(--bg-raised); }
+
+        tbody td {
+            padding: 0.75rem 1rem;
+            vertical-align: top;
+            color: var(--text-muted);
         }
+
         td code {
-            background-color: #eef1f4;
-            padding: 0.2em 0.4em;
+            background-color: var(--bg-raised);
+            color: var(--text-muted);
+            padding: 0.2em 0.45em;
             border-radius: 4px;
-            font-size: 0.9em;
+            font-size: 0.8em;
+            font-family: var(--font-mono);
+            word-break: break-all;
         }
-        .upload-container {
-            margin-bottom: 2em;
-            padding: 1.5em;
-            background-color: #f8f9fa;
-            border: 2px dashed #d1d9e0;
-            border-radius: 8px;
+
+        td code.new-name {
+            background-color: rgba(0,194,209,0.1);
+            color: var(--accent-cyan);
+        }
+
+        .empty-state {
             text-align: center;
+            padding: 2.5rem;
+            color: var(--text-dim);
+            font-size: 0.9rem;
         }
-        .upload-container input[type="file"] {
-            margin-bottom: 1em;
+
+        /* ── Footer ── */
+        footer {
+            text-align: center;
+            padding: 1.5rem;
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            background-color: var(--bg-surface);
+            border-top: 1px solid var(--border);
+            letter-spacing: 0.04em;
         }
-        .status-container {
-            margin-top: 2em;
-            padding: 1em;
-            background-color: #eef1f4;
-            border-radius: 8px;
-            display: none; /* Hidden by default */
-        }
-        .status-container h2 {
-            margin-top: 0;
-            color: #1a253c;
-        }
-        #status-log {
-            list-style-type: none;
-            padding-left: 0;
-            max-height: 200px;
-            overflow-y: auto;
-            font-family: monospace;
-            background-color: #fff;
-            padding: 10px;
-            border-radius: 4px;
+
+        footer a { color: var(--accent-cyan); text-decoration: none; }
+
+        /* ── Responsive ── */
+        @media (max-width: 600px) {
+            header h1 { font-size: 1.6rem; }
+            .steps { grid-template-columns: 1fr; }
+            .card { padding: 1.25rem; }
+            .results-grid { grid-template-columns: 1fr; }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="upload-container">
-            <h2>Upload PDF Files</h2>
+
+    <header>
+        <span class="brand-wordmark">AI Document Organiser</span>
+        <p class="subtitle">Drop your scanned PDFs in. Get intelligently named, organised files back.</p>
+    </header>
+
+    <main>
+
+        <!-- How it works -->
+        <div class="card">
+            <p class="card-title">How it works</p>
+            <div class="steps">
+                <div class="step">
+                    <div class="step-number">1</div>
+                    <h3>Upload PDFs</h3>
+                    <p>Select one or more scanned PDF documents. OCR runs entirely on your machine.</p>
+                </div>
+                <div class="step">
+                    <div class="step-number">2</div>
+                    <h3>AI reads &amp; understands</h3>
+                    <p>Tesseract extracts text locally; Gemini AI interprets content to generate a structured name.</p>
+                </div>
+                <div class="step">
+                    <div class="step-number">3</div>
+                    <h3>Files renamed &amp; organised</h3>
+                    <p>Each document receives a descriptive name and is filed automatically.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Upload card -->
+        <div class="card">
+            <p class="card-title">Upload &amp; Process</p>
             <form id="upload-form" enctype="multipart/form-data">
-                <input type="file" id="file-input" name="files[]" multiple accept=".pdf">
-                <button type="submit">Upload and Process</button>
+                <div class="drop-zone" id="drop-zone">
+                    <span class="drop-zone-icon">📂</span>
+                    <h3>Drag &amp; drop PDFs here</h3>
+                    <p>or click to browse your files</p>
+                    <input type="file" id="file-input" name="files[]" multiple accept=".pdf">
+                    <label for="file-input" class="btn-secondary">Browse files</label>
+                    <div id="selected-files"></div>
+                </div>
+                <div class="upload-actions">
+                    <button type="submit" class="btn-primary" id="process-btn" disabled>Upload &amp; Process</button>
+                </div>
             </form>
         </div>
 
-        <div id="status-container" class="status-container">
-            <h2>Processing Status</h2>
+        <!-- Status card -->
+        <div class="card" id="status-container">
+            <p class="card-title">Processing Status</p>
+            <div class="spinner-row" id="spinner-row">
+                <div class="spinner"></div>
+                <span>Processing files&hellip;</span>
+            </div>
             <ul id="status-log"></ul>
         </div>
 
-        <h1>File Organization Results</h1>
-        <div id="results-container">
-            <p>Upload files and click "Upload and Process" to see the results.</p>
+        <!-- Live results card -->
+        <div class="card" id="results-section">
+            <p class="card-title">Results</p>
+            <div class="summary-banner" id="summary-banner" style="display:none;"></div>
+            <div id="results-grid-container"></div>
         </div>
-    </div>
 
-    <script>
-        document.getElementById('upload-form').addEventListener('submit', async function(event) {
-            event.preventDefault();
-
-            const statusContainer = document.getElementById('status-container');
-            const statusLog = document.getElementById('status-log');
-            const resultsContainer = document.getElementById('results-container');
-            const fileInput = document.getElementById('file-input');
-            const formData = new FormData();
-
-            if (fileInput.files.length === 0) {
-                alert('Please select files to upload.');
-                return;
-            }
-
-            for (const file of fileInput.files) {
-                formData.append('files[]', file);
-            }
-
-            // Reset UI
-            statusLog.innerHTML = '';
-            statusContainer.style.display = 'block';
-            resultsContainer.innerHTML = '<p>Processing files...</p>';
-
-            try {
-                // Step 1: Upload files
-                statusLog.innerHTML += '<li>Uploading files...</li>';
-                const uploadResponse = await fetch('/upload', {
-                    method: 'POST',
-                    body: formData
-                });
-
-                if (!uploadResponse.ok) {
-                    throw new Error('File upload failed.');
-                }
-                statusLog.innerHTML += '<li>Upload complete. Starting processing...</li>';
-
-                // Step 2: Start processing and listen for events
-                const eventSource = new EventSource('/process');
-
-                eventSource.onmessage = function(e) {
-                    statusLog.innerHTML += `<li>${e.data}</li>`;
-                    statusLog.scrollTop = statusLog.scrollHeight; // Auto-scroll
-                };
-
-                eventSource.addEventListener('end', function(e) {
-                    eventSource.close();
-                    const results = JSON.parse(e.data);
-                    displayResults(results);
-                });
-
-                eventSource.onerror = function(err) {
-                    console.error("EventSource failed:", err);
-                    statusLog.innerHTML += '<li>An error occurred during processing.</li>';
-                    eventSource.close();
-                };
-
-            } catch (error) {
-                console.error('Error:', error);
-                statusLog.innerHTML += `<li>Error: ${error.message}</li>`;
-            }
-        });
-
-        function displayResults(results) {
-            const resultsContainer = document.getElementById('results-container');
-            if (results.length === 0) {
-                resultsContainer.innerHTML = '<p>No files were successfully processed.</p>';
-                return;
-            }
-
-            const table = document.createElement('table');
-            table.innerHTML = `
+        <!-- Previous run results (server-rendered) -->
+        <div class="card" id="previous-results-section">
+            <p class="card-title">Previous Run</p>
+            {% if latest_report %}
+            <table>
                 <thead>
                     <tr>
                         <th>Original File</th>
                         <th>New Organised File</th>
+                        <th>Extracted Text (preview)</th>
                     </tr>
                 </thead>
                 <tbody>
-                    ${results.map(result => `
-                        <tr>
-                            <td><code>${result.original_name}</code></td>
-                            <td><code>${result.new_name}</code></td>
-                        </tr>
-                    `).join('')}
+                    {% for row in latest_report %}
+                    <tr>
+                        <td><code>{{ row.original_name }}</code></td>
+                        <td><code class="new-name">{{ row.new_name }}</code></td>
+                        <td><code>{{ row.ocr_text }}</code></td>
+                    </tr>
+                    {% endfor %}
                 </tbody>
+            </table>
+            {% else %}
+            <p class="empty-state">No previous reports found. Process some files to see results here.</p>
+            {% endif %}
+        </div>
+
+    </main>
+
+    <footer>
+        Powered by <a href="https://ai.google.dev/" target="_blank" rel="noopener">Google Gemini</a>
+        &nbsp;&middot;&nbsp;
+        <a href="https://github.com/tesseract-ocr/tesseract" target="_blank" rel="noopener">Tesseract OCR</a>
+        &nbsp;&middot;&nbsp;
+        <a href="https://github.com/FinancialRADDeveloper/ocr-document-organiser" target="_blank" rel="noopener">View on GitHub</a>
+    </footer>
+
+    <script>
+        // ── File selection & drag-drop ──
+        const fileInput   = document.getElementById('file-input');
+        const dropZone    = document.getElementById('drop-zone');
+        const selectedDiv = document.getElementById('selected-files');
+        const processBtn  = document.getElementById('process-btn');
+
+        function docIcon(name) {
+            if (!name) return '📄';
+            const n = name.toLowerCase();
+            if (/bank|statement|hsbc|barclays|lloyds|natwest|santander|halifax/.test(n)) return '🏦';
+            if (/nhs|hospital|medical|health|gp|doctor|prescription/.test(n)) return '🏥';
+            if (/insurance|policy|certificate|cover/.test(n)) return '🛡️';
+            if (/invoice|receipt|payment|bill/.test(n)) return '🧾';
+            if (/pension|annuity|retirement/.test(n)) return '📊';
+            if (/legal|solicitor|court|tenancy|agreement|contract/.test(n)) return '📜';
+            if (/tax|hmrc|p60|p45|self.assess/.test(n)) return '🏛️';
+            if (/council|local.authority/.test(n)) return '🏛️';
+            if (/payslip|salary|wage/.test(n)) return '💷';
+            return '📄';
+        }
+
+        function escapeHtml(str) {
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        }
+
+        function updateSelectedFiles(files) {
+            if (files.length === 0) {
+                selectedDiv.textContent = '';
+                processBtn.disabled = true;
+            } else {
+                selectedDiv.textContent = files.length === 1
+                    ? `Selected: ${files[0].name}`
+                    : `Selected: ${files.length} files`;
+                processBtn.disabled = false;
+            }
+        }
+
+        fileInput.addEventListener('change', () => updateSelectedFiles(fileInput.files));
+
+        dropZone.addEventListener('dragover',  (e) => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+        dropZone.addEventListener('dragleave', ()  => dropZone.classList.remove('drag-over'));
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('drag-over');
+            const pdfs = Array.from(e.dataTransfer.files).filter(f => f.name.toLowerCase().endsWith('.pdf'));
+            if (!pdfs.length) { alert('Please drop PDF files only.'); return; }
+            const dt = new DataTransfer();
+            pdfs.forEach(f => dt.items.add(f));
+            fileInput.files = dt.files;
+            updateSelectedFiles(fileInput.files);
+        });
+
+        // ── Form submission ──
+        document.getElementById('upload-form').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            if (fileInput.files.length === 0) { alert('Please select files to upload.'); return; }
+
+            const statusContainer = document.getElementById('status-container');
+            const statusLog       = document.getElementById('status-log');
+            const spinnerRow      = document.getElementById('spinner-row');
+            const resultsSection  = document.getElementById('results-section');
+            const summaryBanner   = document.getElementById('summary-banner');
+            const gridContainer   = document.getElementById('results-grid-container');
+            const formData        = new FormData();
+
+            for (const file of fileInput.files) formData.append('files[]', file);
+
+            // Reset UI
+            statusLog.innerHTML    = '';
+            gridContainer.innerHTML = '';
+            summaryBanner.style.display = 'none';
+            statusContainer.style.display = 'block';
+            resultsSection.style.display  = 'none';
+            spinnerRow.style.display      = 'flex';
+            processBtn.disabled = true;
+
+            function addLog(text, cls) {
+                const li = document.createElement('li');
+                if (cls) li.className = cls;
+                li.textContent = text;
+                statusLog.appendChild(li);
+                statusLog.scrollTop = statusLog.scrollHeight;
+            }
+
+            try {
+                addLog('Uploading files…', 'log-info');
+                const uploadResp = await fetch('/upload', { method: 'POST', body: formData });
+                if (!uploadResp.ok) throw new Error('File upload failed.');
+                addLog('Upload complete. Starting AI processing…', 'log-info');
+
+                const eventSource = new EventSource('/process');
+
+                eventSource.onmessage = function(ev) {
+                    const t = ev.data;
+                    const cls = /error|fail|exception/i.test(t) ? 'log-error' : '';
+                    addLog(t, cls);
+                };
+
+                eventSource.addEventListener('end', function(ev) {
+                    eventSource.close();
+                    spinnerRow.style.display = 'none';
+                    addLog('Processing complete.', 'log-done');
+                    displayResults(JSON.parse(ev.data), resultsSection, summaryBanner, gridContainer);
+                    processBtn.disabled = false;
+                });
+
+                eventSource.onerror = function() {
+                    spinnerRow.style.display = 'none';
+                    addLog('Connection error during processing.', 'log-error');
+                    eventSource.close();
+                    processBtn.disabled = false;
+                };
+
+            } catch (err) {
+                spinnerRow.style.display = 'none';
+                addLog(`Error: ${err.message}`, 'log-error');
+                processBtn.disabled = false;
+            }
+        });
+
+        function displayResults(results, section, banner, grid) {
+            section.style.display = 'block';
+
+            if (!results || results.length === 0) {
+                grid.innerHTML = '<p class="empty-state">No files were processed.</p>';
+                return;
+            }
+
+            const succeeded = results.filter(r => r.status !== 'failed');
+            const failed    = results.filter(r => r.status === 'failed');
+            const ts        = results.find(r => r.timestamp)?.timestamp || '';
+
+            // Summary banner
+            banner.style.display = 'flex';
+            banner.innerHTML = `
+                <div class="summary-stat"><span class="val">${results.length}</span><span class="lbl">Processed</span></div>
+                <div class="summary-stat"><span class="val">${succeeded.length}</span><span class="lbl">Renamed</span></div>
+                ${failed.length ? `<div class="summary-stat"><span class="val val-fail">${failed.length}</span><span class="lbl">Failed</span></div>` : ''}
+                ${ts ? `<div class="summary-stat" style="margin-left:auto"><span class="val" style="font-size:0.85rem;color:var(--text-muted)">${escapeHtml(ts)}</span><span class="lbl">Completed</span></div>` : ''}
             `;
-            resultsContainer.innerHTML = '';
-            resultsContainer.appendChild(table);
+
+            // Cards
+            const gridEl = document.createElement('div');
+            gridEl.className = 'results-grid';
+
+            results.forEach(r => {
+                const isFail = r.status === 'failed';
+                const newName = r.new_name || r.original_name;
+                const card = document.createElement('div');
+                card.className = 'result-card' + (isFail ? ' failed' : '');
+                card.innerHTML = `
+                    <div class="result-card-header">
+                        <span class="doc-icon">${docIcon(newName)}</span>
+                        <span class="badge ${isFail ? 'badge-fail' : 'badge-success'}">${isFail ? 'Failed' : 'Renamed'}</span>
+                    </div>
+                    <div class="new-filename">${escapeHtml(newName)}</div>
+                    <div class="orig-filename"><span>was: </span>${escapeHtml(r.original_name)}</div>
+                `;
+                gridEl.appendChild(card);
+            });
+
+            grid.innerHTML = '';
+            grid.appendChild(gridEl);
+            section.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
     </script>
 </body>
