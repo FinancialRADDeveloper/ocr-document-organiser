@@ -125,33 +125,119 @@ def generate_filename_from_text(document_text):
     yield "  -> Generating new filename from text..."
     try:
         # Use a reasoning model, taken from your available list
-        model = genai.GenerativeModel('gemini-2.0-flash')
+        model = genai.GenerativeModel('gemini-pro-latest')
 
         prompt = """
-        You are an expert file organization assistant. Based on the document text provided,
-        generate a concise and descriptive filename.
+You are an expert document management assistant specialising in organising scanned personal and
+business documents. Your task is to analyse the provided document text and return a structured
+JSON object describing the document.
 
-        The format should be: YYYY-MM-DD - Company - Document_Type - Subject - Reference_Number.pdf
+## Output format
 
-        - Use the document's main date for YYYY-MM-DD. If no date is found, use 'Undated'.
-        - Extract the primary company name.
-        - Briefly describe the document type (e.g., 'Annuity Statement', 'Invoice', 'Insurance Policy').
-        - Include a short subject or name if present (e.g., 'A Smith').
-        - Add a unique reference or policy number if available.
-        - If a component is not available in the document, omit it from the filename.
-        - Ensure the final filename is valid for Windows and macOS (no invalid characters like /\\:*?"<>|).
-        - Do not add any extra explanation or text. Only return the suggested filename.
-        """
+Return ONLY a valid JSON object — no markdown fences, no explanation, no extra text:
+
+{
+  "filename": "YYYY-MM-DD - Company - Document Type - Subject - REFnumber.pdf",
+  "confidence": "high" | "medium" | "low",
+  "document_type": "<one of the types listed below>"
+}
+
+## Filename construction rules
+
+1. **Date** (YYYY-MM-DD): Use the primary document date — the date the document was issued or
+   the statement period end date. If multiple dates appear, prefer the issue/effective date over
+   printed/processing dates. If no date is found, use "Undated".
+
+2. **Company**: Extract the issuing organisation's name (e.g. "HSBC", "HMRC", "NHS England",
+   "British Gas"). If the header is a full postal address, extract only the company/organisation
+   name from it. Do not include street addresses.
+
+3. **Document Type**: Choose the single best match from the vocabulary below. Use "Document" only
+   if nothing else fits.
+
+4. **Subject** (optional): A brief identifier such as a person's name (e.g. "J Smith"), an
+   account nickname, or a property address. Omit if not meaningful or not present.
+
+5. **Reference** (optional): The most unique identifier on the document — policy number, invoice
+   number, NI number (partial), tax reference, etc. Prefix with "REF" only if no natural label
+   exists. Omit if not present.
+
+6. Separate components with " - " (space-hyphen-space).
+7. Omit any component that is not present or cannot be determined — do not use placeholders.
+8. The filename MUST be safe for Windows and macOS: no characters from \\ / : * ? " < > |
+9. Keep the filename under 200 characters total.
+10. Always end with ".pdf".
+
+## Document type vocabulary
+
+Use exactly one of the following (or the closest match):
+Bank Statement, Invoice, Receipt, Insurance Policy, Insurance Certificate, Insurance Schedule,
+Payslip, Tax Return, Tax Notice, P60, P45, P11D, Self Assessment, VAT Return,
+Council Tax Notice, Council Tax Bill, Utility Bill, Broadband Bill, Phone Bill, Energy Bill,
+Water Bill, Mortgage Statement, Mortgage Offer, Tenancy Agreement, Lease Agreement,
+Rental Statement, Pension Statement, Pension Letter, Annuity Statement, Investment Statement,
+Savings Statement, Credit Card Statement, Loan Statement, Hire Purchase Agreement,
+NHS Letter, NHS Appointment, Prescription, Medical Report, Hospital Discharge Summary,
+Solicitor Letter, Legal Notice, Court Order, Grant Offer Letter, Bursary Letter,
+Driving Licence, Passport Copy, Birth Certificate, Marriage Certificate, Death Certificate,
+Employment Contract, Redundancy Notice, Reference Letter, DWP Letter, Universal Credit Letter,
+Jury Summons, Planning Permission, Building Regulations, Warranty, User Manual,
+Form, Correspondence, Document
+
+## Edge case handling
+
+- **Personal/sensitive documents** (medical, legal): still name them professionally using the
+  rules above; do not redact or refuse.
+- **Forms**: if the document is clearly a blank or partially filled form, use "Form" as the type.
+- **Multiple companies**: use the issuing company, not any third party mentioned in the body.
+- **Scanned quality**: if text is garbled, use best-effort extraction; set confidence to "low".
+- **No recognisable content**: return filename "Undated - Unknown - Document.pdf",
+  confidence "low", document_type "Document".
+
+## Confidence levels
+
+- "high": date, company, and document type all clearly identified
+- "medium": one component is uncertain or missing
+- "low": significant ambiguity or very little usable text
+"""
 
         # Generate content from the extracted text
         response = model.generate_content([prompt, document_text])
+        raw_text = response.text.strip()
 
-        # Clean up the response to ensure it's a valid filename
-        clean_name = re.sub(r'[\\/*?:"<>|]', "", response.text.strip())
+        # --- Parse JSON response ---
+        clean_name = None
+        document_type = None
 
-        # Ensure it has .pdf extension
-        if not clean_name.lower().endswith('.pdf'):
-            clean_name += '.pdf'
+        # Strip markdown code fences if the model wrapped the JSON
+        fenced = re.match(r'^```(?:json)?\s*([\s\S]*?)\s*```$', raw_text, re.IGNORECASE)
+        json_text = fenced.group(1) if fenced else raw_text
+
+        try:
+            parsed = json.loads(json_text)
+            raw_filename = parsed.get("filename", "").strip()
+            document_type = parsed.get("document_type", "").strip()
+            confidence = parsed.get("confidence", "").strip()
+
+            if raw_filename:
+                # Sanitise the filename extracted from JSON
+                clean_name = re.sub(r'[\\/*?:"<>|]', "", raw_filename)
+                if not clean_name.lower().endswith('.pdf'):
+                    clean_name += '.pdf'
+
+                if document_type:
+                    logger.info(f"  -> Document type: {document_type} (confidence: {confidence})")
+                    yield f"  -> Document type: {document_type} (confidence: {confidence})"
+
+        except (json.JSONDecodeError, AttributeError) as json_err:
+            logger.warning(f"  -> JSON parsing failed ({json_err}); falling back to raw response text.")
+            yield f"  -> JSON parsing failed; using raw model response as filename."
+
+        # Fallback: treat the entire raw response as a filename string
+        if not clean_name:
+            clean_name = re.sub(r'[\\/*?:"<>|]', "", raw_text)
+            if not clean_name.lower().endswith('.pdf'):
+                clean_name += '.pdf'
 
         logger.info(f"  -> Suggested filename: {clean_name}")
         yield f"  -> Suggested filename: {clean_name}"
@@ -221,24 +307,24 @@ def save_results_to_csv(results_data):
         print(f"Error saving CSV file: {e}", file=sys.stderr, flush=True)
         return None
 
-def log_and_stream(message, level=logging.INFO):
-    """Logs to console and yields for SSE stream."""
-    logger.log(level, message)
-    print(message, file=sys.stderr, flush=True)  # Print to stderr to avoid Flask redirection
-    return f"data: {message}\n\n"
-
-def run_sub_process(generator):
-    """Consumes a generator, logs and yields its messages, and returns its final value."""
-    while True:
-        try:
-            message = next(generator)
-            yield log_and_stream(message)
-        except StopIteration as e:
-            return e.value
-
 
 def process_files():
     """Processes all PDF files in the input folder and yields progress."""
+
+    def log_and_stream(message, level=logging.INFO):
+        """Logs to console and yields for SSE stream."""
+        logger.log(level, message)
+        print(message, file=sys.stderr, flush=True)  # Print to stderr to avoid Flask redirection
+        return f"data: {message}\n\n"
+
+    def run_sub_process(generator):
+        """Consumes a generator, logs and yields its messages, and returns its final value."""
+        while True:
+            try:
+                message = next(generator)
+                yield log_and_stream(message)
+            except StopIteration as e:
+                return e.value
 
     results_for_web = []
     results_for_csv = []
@@ -258,6 +344,13 @@ def process_files():
             document_text = yield from run_sub_process(extract_text_from_pdf_local(original_path))
 
             if not document_text:
+                results_for_web.append({
+                    'original_name': original_path.name,
+                    'new_name': original_path.name,
+                    'document_type': 'Unknown',
+                    'status': 'failed',
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                })
                 yield from run_sub_process(archive_original_file(original_path, success=False))
                 continue
 
@@ -266,25 +359,33 @@ def process_files():
 
             if not suggested_name:
                 yield log_and_stream(f"  -> Could not generate a name for {original_path.name}. Skipping.", level=logging.WARNING)
+                results_for_web.append({
+                    'original_name': original_path.name,
+                    'new_name': original_path.name,
+                    'document_type': 'Unknown',
+                    'status': 'failed',
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                })
                 yield from run_sub_process(archive_original_file(original_path, success=False))
                 continue
 
             # Copy and rename the file
             new_path = OUTPUT_FOLDER / suggested_name
-
-            # check that a file with the same name does not already exist, and rename if it does
-            while new_path.exists():
-                new_path = OUTPUT_FOLDER / (suggested_name[:-4] + f" ({datetime.now().strftime('%Y%m%d_%H%M%S')}).pdf")
-
-
             shutil.copy(original_path, new_path)
 
             yield log_and_stream(f"  -> Renamed and copied to: {new_path.name}")
+
+            # Parse document_type from the suggested filename (3rd segment of "YYYY-MM-DD - Company - Document_Type")
+            name_parts = suggested_name.replace('.pdf', '').split(' - ')
+            doc_type = name_parts[2].replace('_', ' ') if len(name_parts) >= 3 else 'Document'
 
             # Store result for web display
             results_for_web.append({
                 'original_name': original_path.name,
                 'new_name': suggested_name,
+                'document_type': doc_type,
+                'status': 'success',
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             })
             # Store results for the CSV report
             results_for_csv.append({
