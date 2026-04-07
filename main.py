@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytesseract
-from flask import Flask, render_template, request, Response
+from flask import Flask, render_template, request, Response, send_from_directory
 import google.generativeai as genai
 from dotenv import load_dotenv
 import json
@@ -343,7 +343,7 @@ def process_single_file(original_path):
             }
 
         # Step 2: AI filename generation
-        name_msgs, suggested_name = consume(generate_filename_from_text(document_text))
+        name_msgs, (suggested_name, cost_usd, ai_input_tokens, ai_output_tokens) = consume(generate_filename_from_text(document_text))
         log_lines.extend(name_msgs)
 
         if not suggested_name:
@@ -387,7 +387,7 @@ def process_single_file(original_path):
             'ocr_text': document_text,
             'status': 'success',
             'log_lines': log_lines,
-            'cost_usd': 0.0,
+            'cost_usd': cost_usd,
         }
 
     except Exception as exc:
@@ -588,6 +588,137 @@ def upload_route():
 def process_route():
     """Triggers the file processing and streams back the status."""
     return Response(process_files(), mimetype='text/event-stream')
+
+
+# --- File & Organise routes ---
+
+@app.route('/api/browse')
+def api_browse():
+    """Returns the contents of a directory as JSON for the folder tree browser."""
+    from flask import jsonify
+    path = request.args.get('path', '')
+    if not path:
+        if os.name == 'nt':
+            import string
+            drives = [f"{d}:\\" for d in string.ascii_uppercase if Path(f"{d}:\\").exists()]
+            return jsonify({'path': '', 'dirs': [{'name': d, 'path': d} for d in drives]})
+        else:
+            return jsonify({'path': '/', 'dirs': [{'name': '/', 'path': '/'}]})
+
+    target = Path(path)
+    if not target.exists() or not target.is_dir():
+        return jsonify({'error': 'Path not found'}), 404
+
+    try:
+        dirs = []
+        for item in sorted(target.iterdir()):
+            if item.is_dir() and not item.name.startswith('.'):
+                try:
+                    has_children = any(True for c in item.iterdir() if c.is_dir() and not c.name.startswith('.'))
+                except PermissionError:
+                    has_children = False
+                dirs.append({'name': item.name, 'path': str(item), 'hasChildren': has_children})
+        return jsonify({'path': str(target), 'dirs': dirs})
+    except PermissionError:
+        return jsonify({'error': 'Permission denied'}), 403
+
+
+@app.route('/api/suggest-filing', methods=['POST'])
+def api_suggest_filing():
+    """Suggests filing destinations for PDFs in source_folder using Gemini."""
+    from flask import jsonify
+    data = request.get_json()
+    source_folder = Path(data.get('source_folder', ''))
+    destination_root = Path(data.get('destination_root', ''))
+
+    if not source_folder.exists() or not destination_root.exists():
+        return jsonify({'error': 'Invalid paths'}), 400
+
+    # Get destination folder tree (2 levels deep)
+    dest_folders = []
+    for item in destination_root.rglob('*'):
+        if item.is_dir() and not item.name.startswith('.'):
+            depth = len(item.relative_to(destination_root).parts)
+            if depth <= 2:
+                dest_folders.append(str(item))
+
+    # For each PDF in source, suggest destination
+    suggestions = []
+    model = genai.GenerativeModel('gemini-2.0-flash')
+
+    for pdf in sorted(source_folder.glob('*.pdf')):
+        try:
+            prompt = f"""You are a document filing assistant.
+Document filename: {pdf.name}
+Available destination folders:
+{chr(10).join(dest_folders)}
+
+Based on the filename alone, suggest the single most appropriate destination folder from the list above.
+Return ONLY the exact folder path from the list. Nothing else. No explanation."""
+
+            response = model.generate_content(prompt)
+            suggested = response.text.strip()
+
+            # Validate the suggestion is actually in our list
+            if suggested not in dest_folders:
+                suggested = str(destination_root)  # fallback to root
+
+            suggestions.append({
+                'filename': pdf.name,
+                'source_path': str(pdf),
+                'suggested_destination': suggested,
+                'destination_folder': Path(suggested).name,
+            })
+        except Exception as e:
+            suggestions.append({
+                'filename': pdf.name,
+                'source_path': str(pdf),
+                'suggested_destination': str(destination_root),
+                'destination_folder': '(root)',
+                'error': str(e),
+            })
+
+    return jsonify({'suggestions': suggestions})
+
+
+@app.route('/api/apply-filing', methods=['POST'])
+def api_apply_filing():
+    """Moves files to their suggested destinations and archives originals."""
+    from flask import jsonify
+    data = request.get_json()
+    moves = data.get('moves', [])
+
+    FILED_FOLDER = Path('successfully_filed')
+    FILED_FOLDER.mkdir(exist_ok=True)
+
+    results = []
+    for move in moves:
+        source = Path(move['source_path'])
+        destination_dir = Path(move['destination_folder'])
+
+        try:
+            destination_dir.mkdir(parents=True, exist_ok=True)
+            dest_file = destination_dir / source.name
+
+            # Handle duplicates
+            if dest_file.exists():
+                stem = source.stem
+                suffix = source.suffix
+                dest_file = destination_dir / f"{stem} ({datetime.now().strftime('%Y%m%d_%H%M%S')}){suffix}"
+
+            shutil.copy2(source, dest_file)
+            shutil.move(str(source), FILED_FOLDER / source.name)
+            results.append({'filename': source.name, 'status': 'success', 'destination': str(dest_file)})
+        except Exception as e:
+            results.append({'filename': source.name, 'status': 'error', 'error': str(e)})
+
+    return jsonify({'results': results})
+
+
+@app.route('/files/<path:filename>')
+def serve_organised_file(filename):
+    """Serves a renamed PDF from the organised_files folder for inline viewing."""
+    return send_from_directory(OUTPUT_FOLDER, filename)
 
 
 if __name__ == '__main__':
