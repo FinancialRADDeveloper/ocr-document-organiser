@@ -344,6 +344,13 @@ def process_files():
             document_text = yield from run_sub_process(extract_text_from_pdf_local(original_path))
 
             if not document_text:
+                results_for_web.append({
+                    'original_name': original_path.name,
+                    'new_name': original_path.name,
+                    'document_type': 'Unknown',
+                    'status': 'failed',
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                })
                 yield from run_sub_process(archive_original_file(original_path, success=False))
                 continue
 
@@ -352,6 +359,13 @@ def process_files():
 
             if not suggested_name:
                 yield log_and_stream(f"  -> Could not generate a name for {original_path.name}. Skipping.", level=logging.WARNING)
+                results_for_web.append({
+                    'original_name': original_path.name,
+                    'new_name': original_path.name,
+                    'document_type': 'Unknown',
+                    'status': 'failed',
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                })
                 yield from run_sub_process(archive_original_file(original_path, success=False))
                 continue
 
@@ -361,10 +375,17 @@ def process_files():
 
             yield log_and_stream(f"  -> Renamed and copied to: {new_path.name}")
 
+            # Parse document_type from the suggested filename (3rd segment of "YYYY-MM-DD - Company - Document_Type")
+            name_parts = suggested_name.replace('.pdf', '').split(' - ')
+            doc_type = name_parts[2].replace('_', ' ') if len(name_parts) >= 3 else 'Document'
+
             # Store result for web display
             results_for_web.append({
                 'original_name': original_path.name,
                 'new_name': suggested_name,
+                'document_type': doc_type,
+                'status': 'success',
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             })
             # Store results for the CSV report
             results_for_csv.append({
