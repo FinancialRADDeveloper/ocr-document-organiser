@@ -51,6 +51,10 @@ REPORTS_FOLDER = Path("reports")
 PROCESSED_FOLDER = Path("processing_completed")
 FAILED_FOLDER = Path("processing_failed")
 
+# Gemini 2.0 Flash pricing (USD per 1M tokens)
+GEMINI_PRICE_INPUT_PER_M  = 0.075
+GEMINI_PRICE_OUTPUT_PER_M = 0.30
+
 
 # --- AI Model Interaction ---
 def list_gemini_models():
@@ -205,6 +209,13 @@ Form, Correspondence, Document
         response = model.generate_content([prompt, document_text])
         raw_text = response.text.strip()
 
+        # Capture token usage and calculate cost
+        usage = response.usage_metadata
+        input_tokens  = usage.prompt_token_count     if usage else 0
+        output_tokens = usage.candidates_token_count if usage else 0
+        cost_usd = (input_tokens  / 1_000_000 * GEMINI_PRICE_INPUT_PER_M +
+                    output_tokens / 1_000_000 * GEMINI_PRICE_OUTPUT_PER_M)
+
         # --- Parse JSON response ---
         clean_name = None
         document_type = None
@@ -241,13 +252,18 @@ Form, Correspondence, Document
 
         logger.info(f"  -> Suggested filename: {clean_name}")
         yield f"  -> Suggested filename: {clean_name}"
-        return clean_name
+
+        token_msg = f"  -> Tokens used: {input_tokens:,} in / {output_tokens:,} out  |  Est. cost: ~${cost_usd:.5f}"
+        logger.info(token_msg)
+        yield token_msg
+
+        return (clean_name, cost_usd, input_tokens, output_tokens)
 
     except Exception as e:
         error_msg = f"  -> An error occurred with the AI model: {e}"
         logger.error(error_msg)
         yield error_msg
-        return None
+        return (None, 0.0, 0, 0)
 
 
 def archive_original_file(original_path, success):
@@ -328,6 +344,9 @@ def process_files():
 
     results_for_web = []
     results_for_csv = []
+    session_cost = 0.0
+    total_input_tokens = 0
+    total_output_tokens = 0
 
     try:
         # Ensure folders exist
@@ -355,7 +374,11 @@ def process_files():
                 continue
 
             # Step 2: Generate a new filename from the extracted text
-            suggested_name = yield from run_sub_process(generate_filename_from_text(document_text))
+            result = yield from run_sub_process(generate_filename_from_text(document_text))
+            suggested_name, file_cost, in_tok, out_tok = result if result else (None, 0.0, 0, 0)
+            session_cost += file_cost
+            total_input_tokens += in_tok
+            total_output_tokens += out_tok
 
             if not suggested_name:
                 yield log_and_stream(f"  -> Could not generate a name for {original_path.name}. Skipping.", level=logging.WARNING)
@@ -408,8 +431,13 @@ def process_files():
                 yield log_and_stream("Error: Failed to save the processing report.", level=logging.ERROR)
 
         # Use a specific event to send the final data and end the stream
-        json_payload = json.dumps(results_for_web)
-        yield f"event: end\ndata: {json_payload}\n\n"
+        end_payload = {
+            "results": results_for_web,
+            "session_cost": round(session_cost, 5),
+            "total_input_tokens": total_input_tokens,
+            "total_output_tokens": total_output_tokens,
+        }
+        yield f"event: end\ndata: {json.dumps(end_payload)}\n\n"
 
     except Exception as e:
         # Catch any unexpected errors during processing

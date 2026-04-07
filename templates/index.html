@@ -669,7 +669,12 @@
                     eventSource.close();
                     spinnerRow.style.display = 'none';
                     addLog('Processing complete.', 'log-done');
-                    displayResults(JSON.parse(ev.data), resultsSection, summaryBanner, gridContainer);
+                    const payload = JSON.parse(ev.data);
+                    const results     = Array.isArray(payload) ? payload : (payload.results || []);
+                    const sessionCost = payload.session_cost || 0;
+                    const tokensIn    = payload.total_input_tokens || 0;
+                    const tokensOut   = payload.total_output_tokens || 0;
+                    displayResults(results, sessionCost, tokensIn, tokensOut, resultsSection, summaryBanner, gridContainer);
                     processBtn.disabled = false;
                 });
 
@@ -687,7 +692,7 @@
             }
         });
 
-        function displayResults(results, section, banner, grid) {
+        function displayResults(results, sessionCost, tokensIn, tokensOut, section, banner, grid) {
             section.style.display = 'block';
 
             if (!results || results.length === 0) {
@@ -705,7 +710,15 @@
                 <div class="summary-stat"><span class="val">${results.length}</span><span class="lbl">Processed</span></div>
                 <div class="summary-stat"><span class="val">${succeeded.length}</span><span class="lbl">Renamed</span></div>
                 ${failed.length ? `<div class="summary-stat"><span class="val val-fail">${failed.length}</span><span class="lbl">Failed</span></div>` : ''}
-                ${ts ? `<div class="summary-stat" style="margin-left:auto"><span class="val" style="font-size:0.85rem;color:var(--text-muted)">${escapeHtml(ts)}</span><span class="lbl">Completed</span></div>` : ''}
+                <div class="summary-stat" style="margin-left:auto">
+                    <span class="val" style="font-size:1.1rem;color:var(--accent-gold)">~$${sessionCost.toFixed(4)}</span>
+                    <span class="lbl">Est. cost</span>
+                </div>
+                <div class="summary-stat">
+                    <span class="val" style="font-size:0.85rem;color:var(--text-muted)">${tokensIn.toLocaleString()} / ${tokensOut.toLocaleString()}</span>
+                    <span class="lbl">Tokens in / out</span>
+                </div>
+                ${ts ? `<div class="summary-stat"><span class="val" style="font-size:0.85rem;color:var(--text-muted)">${escapeHtml(ts)}</span><span class="lbl">Completed</span></div>` : ''}
             `;
 
             // Cards
