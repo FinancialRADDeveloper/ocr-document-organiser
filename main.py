@@ -479,9 +479,12 @@ def process_files():
                 for future in as_completed(future_to_path):
                     result = future.result()
 
-                    # Replay all log lines from the worker thread into the SSE stream
+                    # Replay log lines, prefixing each with the filename so
+                    # interleaved output from parallel threads is identifiable
+                    prefix = f"[{result['original_name']}] "
                     for line in result['log_lines']:
-                        yield log_and_stream(line)
+                        tagged = line if line.startswith('Processing:') else f"{prefix}{line.lstrip()}"
+                        yield log_and_stream(tagged)
                     session_cost += result.get('cost_usd', 0.0)
 
                     # Build web / CSV records from the result dict
