@@ -59,6 +59,10 @@ MAX_WORKERS = 4
 # Lock to make the duplicate-filename check + copy atomic across threads
 _file_lock = threading.Lock()
 
+# Gemini 2.0 Flash pricing (USD per 1M tokens)
+GEMINI_PRICE_INPUT_PER_M  = 0.075
+GEMINI_PRICE_OUTPUT_PER_M = 0.30
+
 
 # --- AI Model Interaction ---
 def list_gemini_models():
@@ -213,6 +217,13 @@ Form, Correspondence, Document
         response = model.generate_content([prompt, document_text])
         raw_text = response.text.strip()
 
+        # Capture token usage and calculate cost
+        usage = response.usage_metadata
+        input_tokens  = usage.prompt_token_count     if usage else 0
+        output_tokens = usage.candidates_token_count if usage else 0
+        cost_usd = (input_tokens  / 1_000_000 * GEMINI_PRICE_INPUT_PER_M +
+                    output_tokens / 1_000_000 * GEMINI_PRICE_OUTPUT_PER_M)
+
         # --- Parse JSON response ---
         clean_name = None
         document_type = None
@@ -249,13 +260,18 @@ Form, Correspondence, Document
 
         logger.info(f"  -> Suggested filename: {clean_name}")
         yield f"  -> Suggested filename: {clean_name}"
-        return clean_name
+
+        token_msg = f"  -> Tokens used: {input_tokens:,} in / {output_tokens:,} out  |  Est. cost: ~${cost_usd:.5f}"
+        logger.info(token_msg)
+        yield token_msg
+
+        return (clean_name, cost_usd, input_tokens, output_tokens)
 
     except Exception as e:
         error_msg = f"  -> An error occurred with the AI model: {e}"
         logger.error(error_msg)
         yield error_msg
-        return None
+        return (None, 0.0, 0, 0)
 
 
 def archive_original_file(original_path, success):
@@ -436,6 +452,9 @@ def process_files():
 
     results_for_web = []
     results_for_csv = []
+    session_cost = 0.0
+    total_input_tokens = 0
+    total_output_tokens = 0
 
     try:
         # Ensure folders exist
@@ -463,6 +482,7 @@ def process_files():
                     # Replay all log lines from the worker thread into the SSE stream
                     for line in result['log_lines']:
                         yield log_and_stream(line)
+                    session_cost += result.get('cost_usd', 0.0)
 
                     # Build web / CSV records from the result dict
                     web_record = {
@@ -491,9 +511,12 @@ def process_files():
             else:
                 yield log_and_stream("Error: Failed to save the processing report.", level=logging.ERROR)
 
-        # Send final SSE event with full results list so the client can update the UI
-        json_payload = json.dumps(results_for_web)
-        yield f"event: end\ndata: {json_payload}\n\n"
+        # Send final SSE event with results and cost summary
+        end_payload = {
+            "results": results_for_web,
+            "session_cost": round(session_cost, 5),
+        }
+        yield f"event: end\ndata: {json.dumps(end_payload)}\n\n"
 
     except Exception as e:
         error_message = "An unexpected error occurred during processing. Check console for details."
