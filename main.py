@@ -343,7 +343,7 @@ def process_single_file(original_path):
             }
 
         # Step 2: AI filename generation
-        name_msgs, suggested_name = consume(generate_filename_from_text(document_text))
+        name_msgs, (suggested_name, cost_usd, ai_input_tokens, ai_output_tokens) = consume(generate_filename_from_text(document_text))
         log_lines.extend(name_msgs)
 
         if not suggested_name:
@@ -387,7 +387,7 @@ def process_single_file(original_path):
             'ocr_text': document_text,
             'status': 'success',
             'log_lines': log_lines,
-            'cost_usd': 0.0,
+            'cost_usd': cost_usd,
         }
 
     except Exception as exc:
