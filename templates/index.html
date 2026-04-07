@@ -373,6 +373,18 @@
             margin-bottom: 0.5rem;
         }
 
+        .file-link {
+            color: var(--text-primary);
+            text-decoration: none;
+            border-bottom: 1px solid transparent;
+            transition: color 0.15s, border-color 0.15s;
+        }
+
+        .file-link:hover {
+            color: var(--accent-cyan);
+            border-bottom-color: var(--accent-cyan);
+        }
+
         .orig-filename {
             font-size: 0.75rem;
             color: var(--text-dim);
@@ -1086,7 +1098,7 @@
                         <span class="doc-icon">${docIcon(newName)}</span>
                         <span class="badge ${isFail ? 'badge-fail' : 'badge-success'}">${isFail ? 'Failed' : 'Renamed'}</span>
                     </div>
-                    <div class="new-filename">${escapeHtml(newName)}</div>
+                    <div class="new-filename"><a href="/files/${encodeURIComponent(newName)}" target="_blank" class="file-link">${escapeHtml(newName)}</a></div>
                     <div class="orig-filename"><span>was: </span>${escapeHtml(r.original_name)}</div>
                 `;
                 gridEl.appendChild(card);

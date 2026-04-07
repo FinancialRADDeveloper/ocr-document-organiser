@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytesseract
-from flask import Flask, render_template, request, Response
+from flask import Flask, render_template, request, Response, send_from_directory
 import google.generativeai as genai
 from dotenv import load_dotenv
 import json
@@ -713,6 +713,12 @@ def api_apply_filing():
             results.append({'filename': source.name, 'status': 'error', 'error': str(e)})
 
     return jsonify({'results': results})
+
+
+@app.route('/files/<path:filename>')
+def serve_organised_file(filename):
+    """Serves a renamed PDF from the organised_files folder for inline viewing."""
+    return send_from_directory(OUTPUT_FOLDER, filename)
 
 
 if __name__ == '__main__':
