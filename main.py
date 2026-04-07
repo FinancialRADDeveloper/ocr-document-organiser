@@ -1,6 +1,8 @@
 import os
 import shutil
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import pandas as pd
@@ -50,6 +52,12 @@ OUTPUT_FOLDER = Path("organised_files")
 REPORTS_FOLDER = Path("reports")
 PROCESSED_FOLDER = Path("processing_completed")
 FAILED_FOLDER = Path("processing_failed")
+
+# Parallelism settings
+MAX_WORKERS = 4
+
+# Lock to make the duplicate-filename check + copy atomic across threads
+_file_lock = threading.Lock()
 
 
 # --- AI Model Interaction ---
@@ -275,6 +283,115 @@ def archive_original_file(original_path, success):
 
 
 # --- File Processing ---
+def consume(gen):
+    """Consume a generator, return (messages, return_value)."""
+    messages = []
+    try:
+        while True:
+            messages.append(next(gen))
+    except StopIteration as e:
+        return messages, e.value
+
+
+def process_single_file(original_path):
+    """
+    Run the full pipeline for one PDF file in a thread.
+
+    Returns a dict with keys:
+        original_name  – str
+        new_name       – str
+        status         – "success" | "failed"
+        log_lines      – list[str]
+        cost_usd       – float  (placeholder; cost tracking added separately)
+    """
+    log_lines = []
+    original_name = original_path.name
+
+    try:
+        log_lines.append(f"Processing: {original_name}")
+
+        # Step 1: OCR
+        ocr_msgs, document_text = consume(extract_text_from_pdf_local(original_path))
+        log_lines.extend(ocr_msgs)
+
+        if not document_text:
+            log_lines.append(f"  -> OCR failed for {original_name}. Marking as failed.")
+            archive_msgs, _ = consume(archive_original_file(original_path, success=False))
+            log_lines.extend(archive_msgs)
+            return {
+                'original_name': original_name,
+                'new_name': original_name,
+                'status': 'failed',
+                'log_lines': log_lines,
+                'cost_usd': 0.0,
+            }
+
+        # Step 2: AI filename generation
+        name_msgs, suggested_name = consume(generate_filename_from_text(document_text))
+        log_lines.extend(name_msgs)
+
+        if not suggested_name:
+            log_lines.append(f"  -> Could not generate a name for {original_name}. Skipping.")
+            archive_msgs, _ = consume(archive_original_file(original_path, success=False))
+            log_lines.extend(archive_msgs)
+            return {
+                'original_name': original_name,
+                'new_name': original_name,
+                'status': 'failed',
+                'log_lines': log_lines,
+                'cost_usd': 0.0,
+            }
+
+        # Step 3: Copy to output (thread-safe duplicate check)
+        with _file_lock:
+            new_path = OUTPUT_FOLDER / suggested_name
+            stem = new_path.stem
+            suffix = new_path.suffix
+            counter = 1
+            while new_path.exists():
+                new_path = OUTPUT_FOLDER / f"{stem} ({counter}){suffix}"
+                counter += 1
+            shutil.copy(original_path, new_path)
+
+        final_name = new_path.name
+        log_lines.append(f"  -> Renamed and copied to: {final_name}")
+
+        # Step 4: Archive original
+        archive_msgs, _ = consume(archive_original_file(original_path, success=True))
+        log_lines.extend(archive_msgs)
+
+        # Parse document type from filename segments
+        name_parts = final_name.replace('.pdf', '').split(' - ')
+        doc_type = name_parts[2].replace('_', ' ') if len(name_parts) >= 3 else 'Document'
+
+        return {
+            'original_name': original_name,
+            'new_name': final_name,
+            'document_type': doc_type,
+            'ocr_text': document_text,
+            'status': 'success',
+            'log_lines': log_lines,
+            'cost_usd': 0.0,
+        }
+
+    except Exception as exc:
+        log_lines.append(f"  -> Unexpected error processing {original_name}: {exc}")
+        logger.error(f"Unexpected error processing {original_name}: {exc}", exc_info=True)
+        # Best-effort archive to failed folder
+        try:
+            archive_msgs, _ = consume(archive_original_file(original_path, success=False))
+            log_lines.extend(archive_msgs)
+        except Exception:
+            pass
+        return {
+            'original_name': original_name,
+            'new_name': original_name,
+            'status': 'failed',
+            'log_lines': log_lines,
+            'cost_usd': 0.0,
+        }
+
+
 def save_results_to_csv(results_data):
     """Saves processing results to a timestamped CSV file using pandas."""
     if not results_data:
@@ -309,22 +426,13 @@ def save_results_to_csv(results_data):
 
 
 def process_files():
-    """Processes all PDF files in the input folder and yields progress."""
+    """Processes all PDF files in the input folder concurrently and yields SSE progress."""
 
     def log_and_stream(message, level=logging.INFO):
-        """Logs to console and yields for SSE stream."""
+        """Logs to console and returns an SSE data line."""
         logger.log(level, message)
-        print(message, file=sys.stderr, flush=True)  # Print to stderr to avoid Flask redirection
+        print(message, file=sys.stderr, flush=True)
         return f"data: {message}\n\n"
-
-    def run_sub_process(generator):
-        """Consumes a generator, logs and yields its messages, and returns its final value."""
-        while True:
-            try:
-                message = next(generator)
-                yield log_and_stream(message)
-            except StopIteration as e:
-                return e.value
 
     results_for_web = []
     results_for_csv = []
@@ -336,66 +444,42 @@ def process_files():
 
         yield log_and_stream("Starting file processing...")
 
-        # Iterate through files in the input folder
-        for original_path in INPUT_FOLDER.glob("*.pdf"):
-            yield log_and_stream(f"Processing: {original_path.name}")
+        pdf_paths = list(INPUT_FOLDER.glob("*.pdf"))
 
-            # Step 1: Extract text from the PDF
-            document_text = yield from run_sub_process(extract_text_from_pdf_local(original_path))
+        if not pdf_paths:
+            yield log_and_stream("No PDF files found in input folder.")
+        else:
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                # Submit all files up-front
+                future_to_path = {
+                    executor.submit(process_single_file, path): path
+                    for path in pdf_paths
+                }
 
-            if not document_text:
-                results_for_web.append({
-                    'original_name': original_path.name,
-                    'new_name': original_path.name,
-                    'document_type': 'Unknown',
-                    'status': 'failed',
-                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                })
-                yield from run_sub_process(archive_original_file(original_path, success=False))
-                continue
+                # Stream results as each file completes (fastest first)
+                for future in as_completed(future_to_path):
+                    result = future.result()
 
-            # Step 2: Generate a new filename from the extracted text
-            suggested_name = yield from run_sub_process(generate_filename_from_text(document_text))
+                    # Replay all log lines from the worker thread into the SSE stream
+                    for line in result['log_lines']:
+                        yield log_and_stream(line)
 
-            if not suggested_name:
-                yield log_and_stream(f"  -> Could not generate a name for {original_path.name}. Skipping.", level=logging.WARNING)
-                results_for_web.append({
-                    'original_name': original_path.name,
-                    'new_name': original_path.name,
-                    'document_type': 'Unknown',
-                    'status': 'failed',
-                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                })
-                yield from run_sub_process(archive_original_file(original_path, success=False))
-                continue
+                    # Build web / CSV records from the result dict
+                    web_record = {
+                        'original_name': result['original_name'],
+                        'new_name': result['new_name'],
+                        'document_type': result.get('document_type', 'Unknown'),
+                        'status': result['status'],
+                        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    }
+                    results_for_web.append(web_record)
 
-            # Copy and rename the file
-            new_path = OUTPUT_FOLDER / suggested_name
-            shutil.copy(original_path, new_path)
-
-            yield log_and_stream(f"  -> Renamed and copied to: {new_path.name}")
-
-            # Parse document_type from the suggested filename (3rd segment of "YYYY-MM-DD - Company - Document_Type")
-            name_parts = suggested_name.replace('.pdf', '').split(' - ')
-            doc_type = name_parts[2].replace('_', ' ') if len(name_parts) >= 3 else 'Document'
-
-            # Store result for web display
-            results_for_web.append({
-                'original_name': original_path.name,
-                'new_name': suggested_name,
-                'document_type': doc_type,
-                'status': 'success',
-                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            })
-            # Store results for the CSV report
-            results_for_csv.append({
-                'original_name': original_path.name,
-                'ocr_text': document_text,
-                'new_name': suggested_name,
-            })
-
-            # Archive the original file
-            yield from run_sub_process(archive_original_file(original_path, success=True))
+                    if result['status'] == 'success':
+                        results_for_csv.append({
+                            'original_name': result['original_name'],
+                            'ocr_text': result.get('ocr_text', ''),
+                            'new_name': result['new_name'],
+                        })
 
         yield log_and_stream("File processing complete.")
 
@@ -407,21 +491,18 @@ def process_files():
             else:
                 yield log_and_stream("Error: Failed to save the processing report.", level=logging.ERROR)
 
-        # Use a specific event to send the final data and end the stream
+        # Send final SSE event with full results list so the client can update the UI
         json_payload = json.dumps(results_for_web)
         yield f"event: end\ndata: {json_payload}\n\n"
 
     except Exception as e:
-        # Catch any unexpected errors during processing
         error_message = "An unexpected error occurred during processing. Check console for details."
-        # Log the full exception and traceback to the console
         logger.error(f"An unexpected error occurred during processing: {e}", exc_info=True)
         print(f"ERROR: An unexpected error occurred during processing: {e}", file=sys.stderr, flush=True)
         import traceback
         traceback.print_exc(file=sys.stderr)
         yield log_and_stream(error_message, level=logging.ERROR)
 
-        # Still send an 'end' event so the client knows processing has stopped
         error_payload = json.dumps({"error": error_message})
         yield f"event: end\ndata: {error_payload}\n\n"
 
