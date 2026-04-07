@@ -9,5 +9,7 @@ __pycache__
 input_files
 organised_files
 reports
+processing_completed
+processing_failed
 # Secrets should be passed as environment variables, not copied
 .env

@@ -1,0 +1,14 @@
+services:
+  document-organiser:
+    build: .
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    volumes:
+      - ./input_files:/app/input_files
+      - ./organised_files:/app/organised_files
+      - ./reports:/app/reports
+      - ./processing_completed:/app/processing_completed
+      - ./processing_failed:/app/processing_failed
+    restart: unless-stopped
