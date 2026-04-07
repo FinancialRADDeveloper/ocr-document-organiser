@@ -324,23 +324,28 @@
                     eventSource.close();
                     processingIndicator.classList.add('hidden');
 
-                    let results;
+                    let payload;
                     try {
-                        results = JSON.parse(e.data);
+                        payload = JSON.parse(e.data);
                     } catch(_) {
                         addLogLine('Could not parse results from server.', true);
                         return;
                     }
 
+                    // Support both new payload shape {results, session_cost, ...} and legacy array
+                    const results     = Array.isArray(payload) ? payload : (payload.results || []);
+                    const sessionCost = payload.session_cost || 0;
+                    const tokensIn    = payload.total_input_tokens || 0;
+                    const tokensOut   = payload.total_output_tokens || 0;
+
                     // Handle error payload (object with .error key instead of array)
-                    if (!Array.isArray(results)) {
-                        const errMsg = results.error || 'An unexpected error occurred.';
-                        addLogLine(errMsg, true);
-                        showSummary([], true);
+                    if (!Array.isArray(payload) && payload.error) {
+                        addLogLine(payload.error, true);
+                        showSummary([], true, 0, 0, 0);
                         return;
                     }
 
-                    showSummary(results, false);
+                    showSummary(results, false, sessionCost, tokensIn, tokensOut);
                     displayResults(results);
                 });
 
@@ -367,7 +372,7 @@
             statusLog.scrollTop = statusLog.scrollHeight;
         }
 
-        function showSummary(results, hadConnectionError) {
+        function showSummary(results, hadConnectionError, sessionCost, tokensIn, tokensOut) {
             const banner = document.getElementById('summary-banner');
             const total     = results.length;
             const succeeded = results.filter(r => r.status === 'success').length;
@@ -377,6 +382,16 @@
             if (hadConnectionError || (total > 0 && failed === total)) {
                 banner.className = 'has-errors';
             }
+
+            const costHtml = (sessionCost > 0 || tokensIn > 0) ? `
+                    <div class="summary-item" style="margin-left:auto">
+                        <strong style="font-size:1.1rem;color:#b8860b">~$${sessionCost.toFixed(4)}</strong><br>
+                        <span style="font-size:0.8em;opacity:0.75">Est. cost</span>
+                    </div>
+                    <div class="summary-item">
+                        <strong style="font-size:0.85rem">${tokensIn.toLocaleString()} / ${tokensOut.toLocaleString()}</strong><br>
+                        <span style="font-size:0.8em;opacity:0.75">Tokens in / out</span>
+                    </div>` : `<div class="summary-item" style="margin-left:auto; color: inherit; opacity: 0.7; font-size:0.85em;">${timestamp}</div>`;
 
             banner.innerHTML = `
                 <div class="summary-row">
@@ -390,7 +405,7 @@
                     <div class="summary-item"><strong>${total}</strong> file${total !== 1 ? 's' : ''} processed</div>
                     <div class="summary-item"><strong>${succeeded}</strong> renamed successfully</div>
                     ${failed > 0 ? `<div class="summary-item"><strong>${failed}</strong> failed</div>` : ''}
-                    <div class="summary-item" style="margin-left:auto; color: inherit; opacity: 0.7; font-size:0.85em;">${timestamp}</div>
+                    ${costHtml}
                 </div>
             `;
             banner.style.display = 'block';
