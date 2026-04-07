@@ -1,90 +1,151 @@
-# AI Document Organiser
-This project uses AI to automatically rename and organise your scanned PDF documents. It performs local OCR to extract text from your files and then uses the Gemini AI to generate a consistent, descriptive filename based on the document's content.
-A web interface is provided to show the results of the processing.
+# OCR Document Organiser
+
+Hundreds of scanned documents — insurance letters, financial statements, bank correspondence — sitting in a folder as `scan_001.pdf`, `scan_002.pdf`. Finding anything is a manual slog. This tool eliminates that problem.
+
+Drop PDFs into a watched folder. The pipeline runs OCR locally, sends only the extracted text to Google Gemini, and renames each file to a structured, human-readable name like `2024-03-15 - Aviva - Annuity Statement - A Smith - POL-00123456.pdf`. The result lands in an organised output folder, the original is archived, and a CSV audit trail is written automatically.
+
+---
+
+## How It Works
+
+A three-stage pipeline runs per file:
+
+1. **OCR (local)** — `pdf2image` renders each page; Tesseract extracts text. Nothing leaves your machine at this stage.
+2. **AI naming (Gemini)** — Extracted text is sent to `gemini-2.0-flash` with a structured prompt. The model returns a filename in the format `YYYY-MM-DD - Company - Document_Type - Subject - Reference.pdf`. Raw document images are never uploaded.
+3. **File organisation** — The renamed copy is written to `organised_files/`. The original is moved to `processing_completed/` or `processing_failed/` depending on outcome.
+
+Progress streams back to the browser in real time via **Server-Sent Events** — no polling, no page refreshes.
+
+---
+
 ## Features
-- **Local OCR:** Extracts text from PDFs on your machine using Tesseract to save on API costs.
-- **AI-Powered Renaming:** Leverages a generative AI model to create clean, structured filenames.
-- **Automated File Archiving:** Moves original files to `processed_files` or `failed_process_files` folders after each run.
-- **Web Interface:** Displays a summary of the original and new filenames in your browser.
-- **Dockerized:** Includes a Docker setup for easy, consistent, and cross-platform deployment.
+
+- **Privacy-conscious architecture** — OCR runs entirely on-device via Tesseract. Only extracted text (no images, no raw PDFs) is sent to the Gemini API.
+- **Structured AI-generated filenames** — Date, company, document type, subject, and reference number extracted and formatted consistently.
+- **Duplicate-safe output** — If a suggested filename already exists in `organised_files/`, a timestamp suffix is appended rather than overwriting.
+- **Real-time progress streaming** — Flask SSE stream pushes per-file status to the browser as processing happens.
+- **Automated archiving** — Processed originals are moved to `processing_completed/`; failures go to `processing_failed/` for review.
+- **CSV audit log** — Each run writes a timestamped report to `reports/` with original name, extracted text, and new name.
+- **Dockerised** — Single container bundles Python, Tesseract, and Poppler. No system dependency wrangling.
+
+---
+
+## Tech Stack
+
+| Component | Technology |
+|---|---|
+| Runtime | Python 3.12 |
+| Web framework | Flask 3.0 |
+| OCR engine | Tesseract OCR (via `pytesseract`) |
+| PDF rendering | `pdf2image` + Poppler |
+| AI model | Google Gemini API (`gemini-2.0-flash`) |
+| Data / reporting | pandas |
+| Containerisation | Docker |
+
+---
+
+## Quick Start (Docker)
+
+**Prerequisites:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running.
+
+```bash
+# 1. Clone the repo
+git clone https://github.com/your-username/ocr-document-organiser.git
+cd ocr-document-organiser
+
+# 2. Set your Gemini API key
+echo 'GEMINI_API_KEY="your_key_here"' > .env
+
+# 3. Build and run
+docker build -t ocr-document-organiser .
+
+docker run -d \
+  --env-file .env \
+  -p 5000:5000 \
+  -v ./input_files:/app/input_files \
+  -v ./organised_files:/app/organised_files \
+  -v ./reports:/app/reports \
+  -v ./processing_completed:/app/processing_completed \
+  -v ./processing_failed:/app/processing_failed \
+  --name document-organiser \
+  ocr-document-organiser
+```
+
+Open `http://localhost:5000`, drop PDFs into `input_files/`, and click **Process**.
+
+Get a Gemini API key at [aistudio.google.com](https://aistudio.google.com/app/apikey) — the free tier is sufficient for typical document volumes.
+
+---
+
+## Local Development
+
+<details>
+<summary>Expand for non-Docker setup</summary>
+
+**Prerequisites:**
+
+- Python 3.12+
+- Tesseract OCR
+  - **Windows:** Installer from [UB Mannheim](https://github.com/UB-Mannheim/tesseract/wiki). Default path: `C:\Program Files\Tesseract-OCR`
+  - **macOS:** `brew install tesseract`
+  - **Linux:** `sudo apt install tesseract-ocr`
+- Poppler
+  - **Windows:** See [this guide](https://stackoverflow.com/questions/18381713/how-to-install-poppler-on-windows); add to `PATH`
+  - **macOS:** `brew install poppler`
+  - **Linux:** `sudo apt install poppler-utils`
+
+**Setup:**
+
+```bash
+git clone https://github.com/your-username/ocr-document-organiser.git
+cd ocr-document-organiser
+
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+
+pip install -r requirements.txt
+
+echo 'GEMINI_API_KEY="your_key_here"' > .env
+```
+
+On Windows, if Tesseract is not on your `PATH`, `main.py` already handles this — it auto-detects `os.name == 'nt'` and sets the executable path to the default install location. Update that path in `main.py` if you installed to a custom directory.
+
+**Run:**
+
+```bash
+python main.py
+```
+
+Open `http://127.0.0.1:5000`.
+
+</details>
+
+---
 
 ## Folder Structure
-- `input_files/`: Place your PDF files here for processing.
-- `organised_files/`: Your renamed and organised PDF files will appear here.
-- `processed_files/`: Original PDFs that were successfully processed are moved here.
-- `failed_process_files/`: Original PDFs that failed to process are moved here for review.
-- `reports/`: Contains CSV logs of the file processing operations.
 
-## Setup and Usage
-There are two methods to run the application. Using Docker is highly recommended as it handles all system dependencies automatically.
-### Method 1: Running with Docker (Recommended)
-This is the simplest way to get started.
-#### Prerequisites
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running on your system.
+```
+ocr-document-organiser/
+├── main.py                  # Flask app, OCR pipeline, SSE streaming
+├── templates/
+│   └── index.html           # Web UI
+├── requirements.txt
+├── Dockerfile
+├── input_files/             # Drop PDFs here (created on first run)
+├── organised_files/         # Renamed output files land here
+├── processing_completed/    # Originals that processed successfully
+├── processing_failed/       # Originals that failed — review manually
+└── reports/                 # Timestamped CSV logs of each run
+```
 
-#### Configuration
-1. **Clone the Repository:**
-``` bash
-    git clone <your-repository-url>
-    cd ocr-document-organiser
-```
-1. **Create Environment File:** Create a file named in the project root and add your Gemini API key: `.env`
-``` 
-    # .env
-    GEMINI_API_KEY="YOUR_API_KEY_HERE"
-```
-Replace `"YOUR_API_KEY_HERE"` with your actual key.
-#### Build and Run
-1. **Build the Docker Image:** Open a terminal in the project's root directory and run:
-``` bash
-    docker build -t ocr-document-organiser .
-```
-1. **Run the Docker Container:** Execute the following command to start the application. This command links your local folders to the container and securely passes your API key.
-``` bash
-    docker run -d \
-      -e GEMINI_API_KEY=$(cat .env | grep GEMINI_API_KEY | cut -d '=' -f2) \
-      -p 5000:5000 \
-      -v ./input_files:/app/input_files \
-      -v ./organised_files:/app/organised_files \
-      -v ./reports:/app/reports \
-      -v ./processed_files:/app/processed_files \
-      -v ./failed_process_files:/app/failed_process_files \
-      --name document-organiser-app \
-      ocr-document-organiser
-```
-#### How to Use
-1. **Add Files:** Place PDF documents into the `input_files` folder on your local machine.
-2. **View Results:** Open your web browser and navigate to `http://localhost:5000`.
-3. **Check Output:** The renamed files will appear in `organised_files`, and the original files will be sorted into `processed_files` or `failed_process_files`.
+---
 
-### Method 2: Running Locally with PyCharm (Advanced)
-This method requires manual installation of system dependencies.
-#### Prerequisites
-- Python 3.12 or newer.
-- PyCharm IDE.
-- **Tesseract-OCR Engine:**
-    - **Windows:** Download and run the installer from the [Tesseract at UB Mannheim page](https://github.com/UB-Mannheim/tesseract/wiki). Note the installation path (e.g., `C:\Program Files\Tesseract-OCR`).
-    - **macOS:** `brew install tesseract`
-    - **Linux:** `sudo apt update && sudo apt install tesseract-ocr`
+## Licence
 
-- **Poppler Utility:**
-    - **Windows:** Follow a guide to [install Poppler for Windows](https://stackoverflow.com/questions/18381713/how-to-install-poppler-on-windows) and add it to your system's PATH.
-    - **macOS:** `brew install poppler`
-    - **Linux:** `sudo apt install poppler-utils`
+MIT. See `LICENSE` for details.
 
-#### Configuration
-1. **Clone the Repository** and open it as a project in PyCharm.
-2. **Create a Virtual Environment** and install dependencies from . PyCharm will likely prompt you to do this automatically. `requirements.txt`
-3. **Create file`.env`** as described in the Docker method.
-4. **(Windows Only)** If you installed Tesseract to a custom location, you may need to uncomment and update the path in : `main.py`
-``` python
-    # main.py
-    # ...
-    # If Tesseract is not in your PATH, you may need to specify its location
-    # Example for Windows:
-    # pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-    # ...
-```
-#### How to Use
-1. **Run the Application:** Right-click the file in PyCharm and select "Run 'main'". `main.py`
-2. **Add Files** and **View Results** as described in the Docker usage section.
+---
+
+## Contributing
+
+Issues and pull requests are welcome. For significant changes, open an issue first to discuss the approach.
